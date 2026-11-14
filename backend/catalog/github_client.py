@@ -11,13 +11,100 @@ from urllib.parse import quote
 
 import httpx
 
-from backend.catalog.config import RepositoryConfig, validate_repo_path
+from backend.catalog.config import FOLDER_HINT_KEYS, RepositoryConfig, is_fixture_folder, validate_repo_path
+from backend.catalog.dimensions import RULES
 from backend.catalog.metadata import repository_facts
 
 MAX_FILE_BYTES = 1_000_000
 MAX_BUNDLE_BYTES = 4_000_000
 MAX_FILES = 100
 MAX_RESPONSE_BYTES = 8_000_000
+
+# 폴더명은 읽기 순서를 정할 약한 신호이며 후보의 기능과 호환성 태그에는 쓰지 않는다.
+FOLDER_ALIASES = {
+    "code_review": ("review", "audit", "리뷰", "코드리뷰"),
+    "test_generation": ("test", "tests", "testing", "tdd", "테스트"),
+    "input_validation": ("validation", "validator", "validate", "입력검증"),
+    "exception_handling": ("exception", "exceptions", "error-handling", "예외처리"),
+    "regression_test": ("regression", "회귀테스트"),
+    "test_coverage": ("coverage", "커버리지"),
+    "documentation": ("documentation", "docs", "doc", "문서화"),
+    "api_security": ("security", "auth", "authentication", "authorization", "oauth", "owasp", "보안"),
+    "accessibility": ("accessibility", "a11y", "wcag", "접근성"),
+    "performance": ("performance", "perf", "optimization", "optimisation", "profiling", "성능"),
+    "browser_testing": ("browser", "playwright", "cypress", "e2e", "브라우저테스트"),
+    "test_design": ("test-design", "testing-strategy", "test-plan", "boundary", "테스트설계"),
+    "database_changes": ("database", "db", "migration", "migrations", "schema", "sql", "마이그레이션"),
+    "typing": ("typing", "types", "type-check", "type-hints", "type-safety", "mypy", "타입검사"),
+    "python": ("python", "py", "파이썬"),
+    "javascript": ("javascript", "java-script", "js", "자바스크립트"),
+    "typescript": ("typescript", "type-script", "ts", "타입스크립트"),
+    "rust": ("rust", "rustlang", "러스트"),
+    "go": ("go", "golang", "고랭"),
+    "java": ("java", "자바"),
+    "csharp": ("csharp", "c-sharp", "cs", "c#"),
+    "cpp": ("cpp", "c++", "cplusplus"),
+    "ruby": ("ruby", "루비"),
+    "php": ("php",),
+    "kotlin": ("kotlin", "코틀린"),
+    "swift": ("swift", "스위프트"),
+    "sql": ("sql",),
+    "fastapi": ("fastapi", "fast-api"),
+    "react": ("react", "reactjs", "react.js", "리액트"),
+    "nextjs": ("nextjs", "next.js", "next-js"),
+    "vue": ("vue", "vuejs", "vue.js"),
+    "nuxt": ("nuxt", "nuxtjs", "nuxt.js"),
+    "express": ("express", "expressjs", "express.js"),
+    "nestjs": ("nestjs", "nest.js", "nest-js"),
+    "spring": ("spring", "springboot", "spring-boot", "스프링"),
+    "codex_cli": ("codex", "codex-cli", "코덱스"),
+    "claude_code": ("claude", "claude-code", "클로드"),
+    "github_copilot": ("copilot", "github-copilot", "코파일럿"),
+    "github_actions": ("github-actions", "actions"),
+    "pytest": ("pytest", "py-test"),
+}
+
+
+def _folder_words(value):
+    """구분자와 CamelCase를 단어로 나눠 go를 goals 같은 부분 문자열과 구별한다."""
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    return " ".join(re.findall(r"[a-z0-9]+(?:\+\+|#)?|[가-힣]+", value.lower()))
+
+
+def prioritize_folders(folders, hints):
+    """모든 폴더를 보존하면서 명시한 관심 기술과 이름이 맞는 폴더부터 읽는다."""
+    if not hints:
+        return folders
+    aliases = [tuple(" " + _folder_words(alias) + " "
+                     for alias in FOLDER_ALIASES.get(hint, (hint,))) for hint in hints]
+
+    def priority(folder):
+        """힌트 하나의 여러 별칭은 중복 가점 없이 한 번만 계산한다."""
+        words = " " + _folder_words(folder) + " "
+        return -sum(any(alias in words for alias in names) for names in aliases), folder
+
+    return sorted(folders, key=priority)
+
+
+def repository_hint_score(item, hints):
+    """공개 검색 설명은 원문을 읽을 순서에만 사용하고 후보 기능의 증거로 저장하지 않는다."""
+    name = item.get("name")
+    if not isinstance(name, str):
+        full_name = item.get("full_name", "")
+        name = full_name.rsplit("/", 1)[-1] if isinstance(full_name, str) else ""
+    description = item.get("description")
+    description = description[:2000] if isinstance(description, str) else ""
+    topics = item.get("topics")
+    topics = [topic for topic in topics[:50] if isinstance(topic, str)
+        and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,49}", topic)] if isinstance(topics, list) else []
+    words = " " + _folder_words(" ".join([name[:200], description, *topics])) + " "
+    score = 0
+    for hint in hints:
+        aliases = FOLDER_ALIASES.get(hint, (hint,))
+        if any(" " + _folder_words(alias) + " " in words for alias in aliases):
+            score += (4 if hint in {"code_review", "test_generation"} else
+                3 if hint in RULES["capabilities"] else 1 if hint in RULES["tools"] else 2)
+    return score
 
 
 class CollectionError(Exception):
@@ -66,6 +153,7 @@ class GithubClient:
             raise ValueError("invalid collection budget")
         self.max_requests = max_requests
         self.request_count = 0
+        self.last_quota = {}
         self.before_request = None
         self.observe_response = None
         self.deadline = time.monotonic() + timeout_seconds
@@ -93,6 +181,10 @@ class GithubClient:
             with self.client.stream("GET", path, params=params,
                                     timeout=min(15, max(0.1, self.deadline - time.monotonic()))) as response:
                 status = response.status_code
+                self.last_quota = {key: int(value) for header, key in (
+                    ("X-RateLimit-Limit", "limit"), ("X-RateLimit-Remaining", "remaining"),
+                    ("X-RateLimit-Reset", "reset"), ("X-RateLimit-Used", "used"))
+                    if (value := response.headers.get(header, "")).isdigit() and len(value) <= 12}
                 if self.observe_response:
                     self.observe_response(status, response.headers)
                 if status == 429 or (status == 403 and (
@@ -123,24 +215,35 @@ class GithubClient:
         if time.monotonic() >= self.deadline:
             raise CollectionError("collection_deadline_exceeded")
 
-    def discover(self, query: str, limit: int) -> list[RepositoryConfig]:
+    def discover(self, query: str, limit: int, *, sort="updated", hints=None) -> list[RepositoryConfig]:
         """작업 관련 공개 검색에서 중복 없는 저장소 후보를 제한된 수만큼 발견한다."""
-        if not 1 <= limit <= 20 or not query.strip() or len(query) > 200:
+        if not 1 <= limit <= 20 or not query.strip() or len(query) > 200 or sort not in {"updated", "best_match"}:
             raise CollectionError("invalid_search")
-        data = self.get("/search/repositories", params={"q": query + " is:public", "per_page": limit})
+        hints = [] if hints is None else hints
+        if not isinstance(hints, list) or any(not isinstance(hint, str) or hint not in FOLDER_HINT_KEYS for hint in hints):
+            raise CollectionError("invalid_search")
+        hints = list(dict.fromkeys(hints))
+        if len(hints) > 20:
+            raise CollectionError("invalid_search")
+        fetch_limit = max(limit, min(20, limit * 5)) if hints else limit
+        params = {"q": query + " is:public", "per_page": fetch_limit}
+        if sort == "updated":
+            params.update(sort="updated", order="desc")
+        data = self.get("/search/repositories", params=params)
         try:
             if data["incomplete_results"] is not False:
                 raise CollectionError("incomplete_search")
             items = data["items"]
-            if not isinstance(items, list) or len(items) > limit:
+            if not isinstance(items, list) or len(items) > fetch_limit:
                 raise CollectionError("invalid_search_payload")
             found = {}
-            for item in items:
+            for index, item in enumerate(items):
                 if item.get("private") is not False or item.get("archived") is not False:
                     continue
                 config = RepositoryConfig(repository=item["full_name"])
-                found[config.repository] = config
-            return list(found.values())
+                if config.repository not in found:
+                    found[config.repository] = (config, repository_hint_score(item, hints), index)
+            return [config for config, _, _ in sorted(found.values(), key=lambda row: (-row[1], row[2]))[:limit]]
         except (KeyError, TypeError, ValueError, AttributeError):
             raise CollectionError("invalid_search_payload") from None
 
@@ -190,11 +293,15 @@ class GithubClient:
                 item["path"].rsplit("/", 1)[0] if "/" in item["path"] else "."
                 for item in entries if item["path"].split("/")[-1] == "SKILL.md"
             })
+            if not config.skill_folders:
+                folders = [folder for folder in folders if not is_fixture_folder(folder)]
+                folders = prioritize_folders(folders, config.folder_hints)
             if len(folders) > 2000:
                 raise CollectionError("too_many_skills")
             return RepositoryPlan(config.repository, {"commit_sha": sha, "tree_sha": tree_sha,
                 "metadata": metadata, "metadata_observed_at": datetime.now(timezone.utc).isoformat(),
-                "folders": folders, "scope": sorted(config.skill_folders), "next": 0}, entries)
+                "folders": folders, "folder_hints": list(config.folder_hints),
+                "scope": sorted(config.skill_folders), "next": 0}, entries)
         except (KeyError, TypeError, IndexError, AttributeError, ValueError):
             raise CollectionError("invalid_payload") from None
 

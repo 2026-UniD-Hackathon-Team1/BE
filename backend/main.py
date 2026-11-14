@@ -20,6 +20,8 @@ from backend.environment import environment_router
 from backend.candidates import candidate_router
 from backend.catalog.jobs import catalog_router
 from backend.catalog.refresh import refresh_router
+from backend.catalog.discovery import discovery_router
+from backend.catalog.eligibility import repository_fixture
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.recommendations import recommendation_router
@@ -35,8 +37,9 @@ def candidate_rows(session):
         .join(ChangeEvent, ChangeEvent.to_version_id == AssetVersion.id)
         .join(Source, Source.id == Asset.source_id)
         .order_by(ChangeEvent.first_seen_at.desc(), Asset.id)).all()
-    return [row for row in rows if row[1].metadata_json.get("demo") or
-            row[3].sync_state.get("current_versions", {}).get(row[0].id) == row[1].id]
+    return [row for row in rows if not repository_fixture(row[0], row[1]) and (
+            row[1].metadata_json.get("demo") or
+            row[3].sync_state.get("current_versions", {}).get(row[0].id) == row[1].id)]
 
 
 def serialize_candidate(asset, version, change, source):
@@ -94,6 +97,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(candidate_router(sessions, auth))
     app.include_router(catalog_router(sessions, operator))
     app.include_router(refresh_router(sessions, operator))
+    app.include_router(discovery_router(sessions, auth, operator))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):
