@@ -20,7 +20,7 @@ def test_connected_pc_registers_input_without_server_file_access(database, tmp_p
     with sessions.begin() as session:
         seed(session)
         session.add(AgentDevice(id="device_inputs", profile_id="local", token_hash=secret_hash("t" * 43),
-            device_name="test", agent_version="test", last_seen_at=utc_now()))
+            device_name="test", agent_version="test", is_primary=True, last_seen_at=utc_now()))
         session.add(Environment(id="env_inputs", profile_id="local", device_id="device_inputs",
             runner="codex_cli", runner_version="test", model_id="fixed",
             installed_skills=[], settings_hash="x", scan_root="agent://device_inputs/scan"))

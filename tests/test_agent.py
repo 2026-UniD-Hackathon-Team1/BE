@@ -74,18 +74,28 @@ def test_code_expiry_reissue_and_device_offline(client, monkeypatch):
     assert client.get("/api/agent", headers=HEADERS).json()["status"] == "connected"
 
 
-def test_reconnect_and_disconnect_revoke_tokens_and_pending_codes(client):
-    """재연결과 해제 뒤 이전 토큰 및 대기 중 코드로 접근하지 못하게 한다."""
+def test_pairing_keeps_multiple_devices_and_disconnect_revokes_all(client, database):
+    """새 기기를 연결해도 기존 기기는 유지하며 명시적 연결 해제는 모두 해제한다."""
     code, old_token = pair_device(client, "old")
     body = {"code": code, "device_name": "repeat", "agent_version": "0.1.0"}
     assert client.post("/api/agent/pair", json=body).status_code == 400
     _, new_token = pair_device(client, "new")
-    assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + old_token}, json={}).status_code == 401
-    assert client.get("/api/agent", headers=HEADERS).json()["device_name"] == "new"
+    assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + old_token}, json={}).status_code == 204
+    devices_response = client.get("/api/agent/devices", headers=HEADERS)
+    assert devices_response.status_code == 200
+    devices = devices_response.json()["devices"]
+    assert len(devices) == 2
+    assert [item["device_name"] for item in devices if item["is_primary"]] == ["new"]
+    with database[1]() as session:
+        devices = list(session.scalars(select(AgentDevice).where(AgentDevice.profile_id == "local")))
+        assert len(devices) == 2
+        assert sum(device.is_primary for device in devices) == 1
+        assert next(device for device in devices if device.device_name == "new").is_primary
     pending = client.post("/api/agent/pairing-code", headers=HEADERS).json()["code"]
     assert client.delete("/api/agent", headers=HEADERS).status_code == 204
     assert client.delete("/api/agent", headers=HEADERS).status_code == 204
     assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + new_token}, json={}).status_code == 401
+    assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + old_token}, json={}).status_code == 401
     assert client.post("/api/agent/pair", json={**body, "code": pending}).status_code == 400
     assert client.get("/api/agent", headers=HEADERS).json()["status"] == "disconnected"
 

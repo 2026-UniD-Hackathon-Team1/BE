@@ -157,7 +157,8 @@ def test_other_device_and_web_cannot_report_jobs(queue):
         session.add(Profile(id="other", role="test", primary_language="python", task_types=[], goals=[]))
         session.flush()
         session.add(AgentDevice(id="other-agent", profile_id="other", token_hash=agent.secret_hash("other-token"),
-            device_name="private", agent_version="test", codex_ready=False, last_seen_at=agent.iso_time(agent.current_time())))
+            device_name="private", agent_version="test", is_primary=True,
+            codex_ready=False, last_seen_at=agent.iso_time(agent.current_time())))
     other = {"Authorization": "Bearer other-token"}
     assert client.get("/api/agent/jobs", headers=other).json() is None
     assert client.post(f"/api/agent/jobs/{job.job_id}/result", headers=other,
@@ -170,8 +171,8 @@ def test_other_device_and_web_cannot_report_jobs(queue):
 
 
 @pytest.mark.parametrize("reconnect", [False, True])
-def test_revocation_cancels_queued_and_running_jobs(queue, reconnect):
-    """연결 해제와 재연결이 이전 기기 작업 및 보고 권한을 함께 취소한다."""
+def test_disconnect_revokes_all_but_reconnect_preserves_devices_and_jobs(queue, reconnect):
+    """명시적 전체 해제만 작업을 취소하고 새 페어링은 기존 기기를 보존한다."""
     client, sessions, bearer = queue
     first = add_job(sessions)
     claim = client.get("/api/agent/jobs", headers=bearer).json()
@@ -181,12 +182,19 @@ def test_revocation_cancels_queued_and_running_jobs(queue, reconnect):
         assert client.post("/api/agent/pair", json={"code": code, "device_name": "replacement", "agent_version": "test"}).status_code == 200
     else:
         assert client.delete("/api/agent", headers=WEB).status_code == 204
-    assert client.get("/api/agent/jobs", headers=bearer).status_code == 401
-    assert client.post(f"/api/agent/jobs/{first.job_id}/result", headers=bearer,
-        json={"claim_token": claim["claim_token"], "status": "done"}).status_code == 401
-    for job in (first, second):
-        assert client.get(f"/api/agent/jobs/{job.job_id}", headers=WEB).json()["status"] == "cancelled"
-    assert add_job(sessions).job_id == first.job_id
+    if reconnect:
+        assert client.post("/api/agent/heartbeat", headers=bearer, json={}).status_code == 204
+        assert client.post(f"/api/agent/jobs/{first.job_id}/result", headers=bearer,
+            json={"claim_token": claim["claim_token"], "status": "done"}).status_code == 204
+        assert client.get(f"/api/agent/jobs/{first.job_id}", headers=WEB).json()["status"] == "done"
+        assert client.get(f"/api/agent/jobs/{second.job_id}", headers=WEB).json()["status"] == "queued"
+        assert client.get("/api/agent/jobs", headers=bearer).json() is None
+    else:
+        assert client.get("/api/agent/jobs", headers=bearer).status_code == 401
+        assert client.post(f"/api/agent/jobs/{first.job_id}/result", headers=bearer,
+            json={"claim_token": claim["claim_token"], "status": "done"}).status_code == 401
+        for job in (first, second):
+            assert client.get(f"/api/agent/jobs/{job.job_id}", headers=WEB).json()["status"] == "cancelled"
 
 
 def test_enqueue_requires_online_device_and_codex_readiness(queue, monkeypatch):

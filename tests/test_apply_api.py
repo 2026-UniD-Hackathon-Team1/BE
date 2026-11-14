@@ -28,7 +28,7 @@ def prepared(database):
     with sessions.begin() as session:
         seed(session)
         session.add(AgentDevice(id="device_test", profile_id="local", token_hash=secret_hash("t" * 43),
-            device_name="test", agent_version="test", last_seen_at=utc_now()))
+            device_name="test", agent_version="test", is_primary=True, last_seen_at=utc_now()))
         session.add(WorkMethod(id="wm_apply", version=1, profile_id="local", task_type="code_review",
             prompt_text="review", is_active=True))
         version = session.get(AssetVersion, "demo_ver_01")
