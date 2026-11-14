@@ -177,7 +177,7 @@ def test_collected_candidate_reaches_recommendations_with_evidence(catalog):
         version_id, digest = version.id, version.bundle_sha256
         version.tags = {"task_types": []}
         version.metadata_json = {**version.metadata_json, "classification_status": "pending"}
-        url = str(session.bind.url)
+        url = session.bind.url.render_as_string(hide_password=False)
     assert collector.collect(config)["new_versions"] == 0
     assert counts(sessions) == (2, 2, 2)
     with sessions() as session:

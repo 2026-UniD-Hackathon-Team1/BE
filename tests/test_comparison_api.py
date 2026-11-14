@@ -15,7 +15,7 @@ def test_comparison_routes_require_token_and_expose_fixture_suggestion(database)
     engine, sessions, _ = database
     with sessions.begin() as session:
         seed(session)
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-token")) as client:
         assert client.get("/api/inputs/suggestions?task_type=code_review").status_code == 401
         response = client.get("/api/inputs/suggestions?task_type=code_review",
             headers={"X-Local-Token": "test-token"})
@@ -28,7 +28,7 @@ def test_comparison_creation_rejects_information_only_candidate(database):
     engine, sessions, _ = database
     with sessions.begin() as session:
         seed(session)
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-token")) as client:
         response = client.post("/api/comparisons", headers={"X-Local-Token": "test-token"},
             json={"method_id":"missing", "method_version":1,
                   "candidate_version_id":"demo_ver_01", "input_ids":["fixture-review-01"],
@@ -49,7 +49,7 @@ def test_completed_comparison_records_user_decision_and_history(database):
             candidate_version_id="demo_ver_01", input_manifest=[{"input_id":"fixture-review-01"}],
             input_sha256="a" * 64, plan={"model_id":"fixed"}, status="done"))
     headers = {"X-Local-Token": "test-token"}
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-token")) as client:
         assert client.get("/api/comparisons/cmp_1", headers=headers).json()["verdict"] is None
         response = client.patch("/api/comparisons/cmp_1/decision", headers=headers,
             json={"choice":"candidate", "reason":"결과가 더 명확함"})
@@ -69,7 +69,7 @@ def test_register_input_rejects_path_escape(database, tmp_path):
             runner_version="test", model_id="fixed", installed_skills=[],
             settings_hash="x", scan_root=str(root)))
     headers = {"X-Local-Token": "test-token"}
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-token")) as client:
         invalid = client.post("/api/inputs", headers=headers,
             json={"relative_paths": ["../outside.py"], "task_type": "code_review"})
         assert invalid.status_code == 422
@@ -114,7 +114,7 @@ def test_comparison_keeps_inputs_separate_by_arm(database, tmp_path, monkeypatch
             support_level="comparable", reviewed=True))
 
     headers = {"X-Local-Token": "test-token"}
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-token")) as client:
         ids = [client.post("/api/inputs", headers=headers,
             json={"relative_paths": [name], "task_type": "code_review"}).json()["input_id"]
             for name in ("first.py", "second.py", "third.py")[:input_count]]

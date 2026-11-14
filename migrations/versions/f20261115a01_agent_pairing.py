@@ -27,7 +27,7 @@ def upgrade():
         sa.Column("last_seen_at", sa.String(), nullable=False),
         sa.Column("revoked_at", sa.String(), nullable=True))
     op.create_index("uq_active_agent_profile", "agent_device", ["profile_id"], unique=True,
-        sqlite_where=sa.text("revoked_at IS NULL"), postgresql_where=sa.text("revoked_at IS NULL"))
+        postgresql_where=sa.text("revoked_at IS NULL"))
     op.create_table("agent_rate_limit",
         sa.Column("key", sa.String(), primary_key=True),
         sa.Column("attempts", sa.Integer(), nullable=False),

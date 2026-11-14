@@ -2,7 +2,7 @@
 import hashlib
 
 from sqlalchemy import select
-from backend.db import local_engine, session_factory
+from backend.db import configured_engine, session_factory
 from backend.models import Asset, AssetVersion, ChangeEvent, Profile, Source
 
 
@@ -34,7 +34,7 @@ def seed(session):
 
 
 if __name__ == "__main__":
-    engine = local_engine()
+    engine = configured_engine()
     with session_factory(engine).begin() as session:
         seed(session)
     engine.dispose()

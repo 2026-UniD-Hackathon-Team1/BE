@@ -10,7 +10,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import case, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from backend.models import AgentDevice, AgentPairingCode, AgentRateLimit, Profile
 from backend.schemas import ErrorResponse
@@ -83,9 +82,8 @@ def agent_router(sessions, web_auth):
         key = scope + ":" + secret_hash(identity)
         with sessions.begin() as session:
             session.execute(delete(AgentRateLimit).where(AgentRateLimit.reset_at < now - 3600))
-            insert = pg_insert if session.bind.dialect.name == "postgresql" else sqlite_insert
             expired = AgentRateLimit.reset_at <= now
-            stmt = insert(AgentRateLimit).values(key=key, attempts=1, reset_at=now + 60)
+            stmt = pg_insert(AgentRateLimit).values(key=key, attempts=1, reset_at=now + 60)
             stmt = stmt.on_conflict_do_update(index_elements=[AgentRateLimit.key], set_={
                 "attempts": case((expired, 1), else_=AgentRateLimit.attempts + 1),
                 "reset_at": case((expired, now + 60), else_=AgentRateLimit.reset_at)})

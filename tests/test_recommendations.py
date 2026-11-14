@@ -15,7 +15,7 @@ def test_recommendations_follow_task_and_keep_user_decisions(database):
         seed(session)
     profile = {"role": "developer", "primary_language": "python", "task_types": ["code_review"],
                "goals": ["input_validation"]}
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         client.put("/api/profile", headers=HEADERS, json=profile)
         client.post("/api/work-methods", headers=HEADERS,
                     json={"task_type": "code_review", "prompt_text": "Review changed code"})
@@ -30,7 +30,7 @@ def test_recommendations_follow_task_and_keep_user_decisions(database):
         assert client.patch(f"/api/recommendations/{rec_id}", headers=HEADERS,
                             json={"status": "kept", "reason": "기존 방식 유지"}).status_code == 204
         assert len(client.get("/api/recommendations", headers=HEADERS).json()["items"]) == 4
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         hidden = client.get("/api/recommendations?include_hidden=true", headers=HEADERS).json()["items"]
         assert len(hidden) == 5
         assert next(item for item in hidden if item["recommendation_id"] == rec_id)["status"] == "kept"
@@ -47,7 +47,7 @@ def test_snooze_dismiss_validation_and_auth(database):
     engine, sessions, _ = database
     with sessions.begin() as session:
         seed(session)
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         assert client.get("/api/recommendations", headers=HEADERS).status_code == 200
         assert client.get("/api/recommendations").status_code == 401
         client.put("/api/profile", headers=HEADERS, json={"role": "dev", "primary_language": "python",

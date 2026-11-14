@@ -11,7 +11,7 @@ METHOD = {"task_type": "code_review", "prompt_text": "Review validation.",
 def test_work_method_versions_and_active_list(database):
     """작업 방식 재등록 시 이전 내용과 ID를 보존하고 활성 버전만 전환하는지 확인한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         assert client.post("/api/work-methods", headers=HEADERS, json=METHOD).status_code == 404
         client.put("/api/profile", headers=HEADERS, json=PROFILE)
         first = client.post("/api/work-methods", headers=HEADERS, json=METHOD)
@@ -29,7 +29,7 @@ def test_work_method_versions_and_active_list(database):
 def test_tasks_have_separate_active_methods_and_auth(database):
     """작업 유형별 활성 방식과 필수 인증, OpenAPI 배열 계약을 검증한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         client.put("/api/profile", headers=HEADERS, json=PROFILE)
         client.post("/api/work-methods", headers=HEADERS, json=METHOD)
         client.post("/api/work-methods", headers=HEADERS, json={**METHOD, "task_type": "test_generation"})

@@ -1,6 +1,6 @@
 import pytest
 from alembic import command
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import IntegrityError
 from backend.models import Asset, AssetVersion, ChangeEvent, Profile, WorkMethod
 from backend.seed import seed
@@ -16,9 +16,6 @@ def test_migration_and_idempotent_seed(database):
         assert session.scalar(select(func.count()).select_from(Profile)) == 1
         assert session.scalar(select(func.count()).select_from(ChangeEvent)) == 10
         assert session.scalar(select(func.count()).select_from(AssetVersion)) == 10
-    with engine.connect() as connection:
-        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
-        assert connection.execute(text("PRAGMA foreign_keys")).scalar() == 1
     command.downgrade(config, "base")
     assert inspect(engine).get_table_names() == ["alembic_version"]
     command.upgrade(config, "head")

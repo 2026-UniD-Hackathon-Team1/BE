@@ -16,7 +16,7 @@ PROFILE = {"role": "developer", "primary_language": "python", "task_types": ["co
 @pytest.fixture
 def client(database):
     """마이그레이션을 적용한 DB와 단일 사용자 웹 인증으로 API를 준비한다."""
-    with TestClient(create_app(database_url=str(database[0].url), local_token="test-local-token")) as value:
+    with TestClient(create_app(database_url=database[0].url.render_as_string(hide_password=False), local_token="test-local-token")) as value:
         assert value.put("/api/profile", headers=HEADERS, json=PROFILE).status_code == 200
         yield value
 
@@ -51,7 +51,7 @@ def test_pair_heartbeat_restart_and_auth_boundaries(client, database):
         assert stored.token_hash == agent.secret_hash(token) and stored.token_hash != token
         assert pairing.code_hash == agent.secret_hash(code.replace("-", ""))
         assert pairing.consumed_at is not None
-    with TestClient(create_app(database_url=str(database[0].url), local_token="test-local-token")) as restarted:
+    with TestClient(create_app(database_url=database[0].url.render_as_string(hide_password=False), local_token="test-local-token")) as restarted:
         assert restarted.get("/api/agent", headers=HEADERS).json() == state
         assert restarted.post("/api/agent/heartbeat", headers=bearer, json={}).status_code == 204
 
@@ -99,7 +99,7 @@ def test_rate_limit_persists_and_resets(client, database, monkeypatch):
         assert client.post("/api/agent/pair", json=body).status_code == 400
     response = client.post("/api/agent/pair", json=body)
     assert response.status_code == 429 and response.headers["Retry-After"] == "60"
-    with TestClient(create_app(database_url=str(database[0].url), local_token="test-local-token")) as restarted:
+    with TestClient(create_app(database_url=database[0].url.render_as_string(hide_password=False), local_token="test-local-token")) as restarted:
         assert restarted.post("/api/agent/pair", json=body).status_code == 429
     now += timedelta(seconds=61)
     assert client.post("/api/agent/pair", json=body).status_code == 400

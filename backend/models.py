@@ -46,7 +46,7 @@ class AgentDevice(Base):
     last_seen_at: Mapped[str] = mapped_column(String)
     revoked_at: Mapped[str | None] = mapped_column(String)
     __table_args__ = (Index("uq_active_agent_profile", "profile_id", unique=True,
-        sqlite_where=text("revoked_at IS NULL"), postgresql_where=text("revoked_at IS NULL")),)
+        postgresql_where=text("revoked_at IS NULL")),)
 
 
 class AgentRateLimit(Base):
@@ -84,7 +84,7 @@ class WorkMethod(Base):
     __table_args__ = (
         CheckConstraint("version > 0"),
         Index("uq_active_method_task", "profile_id", "task_type", unique=True,
-              sqlite_where=text("is_active = 1"), postgresql_where=text("is_active IS TRUE")),
+              postgresql_where=text("is_active IS TRUE")),
     )
 
 

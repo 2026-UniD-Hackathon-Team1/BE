@@ -6,13 +6,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def database_url(override: str | None = None) -> str:
-    """명시한 연결을 우선하고 배포 환경에서 임시 SQLite로 대체되지 않도록 한다."""
+    """로컬과 배포 모두 명시한 PostgreSQL 연결만 허용한다."""
     value = override or os.environ.get("DATABASE_URL")
-    if value:
-        return value
-    if os.environ.get("APP_ENV") in {"staging", "production"} or os.environ.get("RAILWAY_ENVIRONMENT_ID"):
-        raise ValueError("DATABASE_URL must be configured for deployment")
-    return f"sqlite:///{(PROJECT_ROOT / 'data' / 'galatalkka.db').as_posix()}"
+    if not value:
+        raise ValueError("DATABASE_URL must be configured")
+    if not value.startswith(("postgresql://", "postgres://", "postgresql+psycopg://")):
+        raise ValueError("PostgreSQL DATABASE_URL is required")
+    return value
 
 
 def validate_deployment():

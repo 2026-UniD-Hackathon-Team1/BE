@@ -11,7 +11,7 @@ HEADERS = {"X-Local-Token": "test-local-token"}
 def test_onboarding_roundtrip_and_idempotent_save(database):
     """미등록, 저장, 재조회와 동일 요청의 버전 유지 및 실제 수정의 증가를 검증한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         assert client.get("/api/profile", headers=HEADERS).status_code == 404
         saved = client.put("/api/profile", headers=HEADERS, json=PROFILE)
         assert saved.status_code == 200
@@ -23,7 +23,7 @@ def test_onboarding_roundtrip_and_idempotent_save(database):
         assert repeated["profile_version"] == 1 and not repeated["recommendations_stale"]
         updated = client.put("/api/profile", headers=HEADERS, json={**PROFILE, "primary_language": "typescript"}).json()
         assert updated["profile_version"] == 2
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         assert client.get("/api/profile", headers=HEADERS).json()["primary_language"] == "typescript"
 
 
@@ -31,7 +31,7 @@ def test_onboarding_roundtrip_and_idempotent_save(database):
 def test_profile_requires_correct_token(database, headers):
     """토큰 누락과 불일치가 프로필을 읽거나 쓰지 못하게 막는지 검증한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         for response in (client.get("/api/profile", headers=headers), client.put("/api/profile", headers=headers, json=PROFILE)):
             assert response.status_code == 401
             assert response.json()["error"]["code"] == "invalid_local_token"
@@ -41,7 +41,7 @@ def test_profile_requires_correct_token(database, headers):
 def test_missing_server_token_closes_private_api(database):
     """서버 토큰이 설정되지 않았을 때 개인 API를 무인증으로 열지 않는지 확인한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), local_token="")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="")) as client:
         response = client.get("/api/profile", headers=HEADERS)
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "local_token_not_configured"
@@ -50,7 +50,7 @@ def test_missing_server_token_closes_private_api(database):
 def test_profile_schema_security_and_preflight(database):
     """프론트용 헤더 사전 요청과 OpenAPI 보안 계약 및 잘못된 입력을 검증한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), local_token="test-local-token")) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), local_token="test-local-token")) as client:
         preflight = client.options("/api/profile", headers={"Origin": "http://localhost:5173",
             "Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "X-Local-Token,Content-Type"})
         assert preflight.status_code == 200

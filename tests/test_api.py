@@ -9,7 +9,7 @@ def test_docs_and_catalog_contract(database):
     engine, sessions, _ = database
     with sessions.begin() as session:
         seed(session)
-    with TestClient(create_app(database_url=str(engine.url))) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False))) as client:
         assert client.get("/docs").status_code == 200
         schema = client.get("/openapi.json").json()
         assert "/api/catalog/candidates" in schema["paths"]
@@ -27,7 +27,7 @@ def test_docs_and_catalog_contract(database):
 def test_validation_errors_and_cors(database):
     """잘못된 입력과 CORS를 프론트 계약에 맞게 처리하는지 확인한다."""
     engine, _, _ = database
-    with TestClient(create_app(database_url=str(engine.url), cors_origins=["http://localhost:5173"])) as client:
+    with TestClient(create_app(database_url=engine.url.render_as_string(hide_password=False), cors_origins=["http://localhost:5173"])) as client:
         response = client.get("/api/catalog/candidates?limit=0")
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "validation_error"
@@ -37,9 +37,9 @@ def test_validation_errors_and_cors(database):
         assert "access-control-allow-origin" not in denied.headers
 
 
-def test_unmigrated_database_returns_actionable_error(tmp_path):
+def test_unmigrated_database_returns_actionable_error(empty_database):
     """빈 DB에 테이블을 자동 생성하지 않고 마이그레이션 필요 오류를 반환한다."""
-    with TestClient(create_app(database_url=f"sqlite:///{(tmp_path / 'empty.db').as_posix()}")) as client:
+    with TestClient(create_app(database_url=empty_database[2].attributes["database_url"])) as client:
         response = client.get("/api/health")
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "migration_required"

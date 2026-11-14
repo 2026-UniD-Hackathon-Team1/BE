@@ -1,5 +1,4 @@
 import io
-from pathlib import Path
 
 import pytest
 from alembic import command
@@ -41,13 +40,12 @@ def test_deployment_rejects_missing_database_and_weak_settings(monkeypatch):
     validate_deployment()
 
 
-def test_common_url_is_used_by_cli_engine(monkeypatch, tmp_path):
+def test_common_url_is_used_by_cli_engine(monkeypatch):
     """수집 및 seed에 사용하는 엔진도 공통 DATABASE_URL을 따르는지 검증한다."""
-    target = (tmp_path / "nested" / "shared.db").as_posix()
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{target}")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example:example@localhost/test")
     engine = configured_engine()
-    assert engine.url.database == target
-    assert Path(target).parent.exists()
+    assert engine.url.database == "test"
+    assert engine.url.drivername == "postgresql+psycopg"
     engine.dispose()
 
 

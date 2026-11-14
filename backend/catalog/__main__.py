@@ -6,7 +6,7 @@ from pathlib import Path
 from backend.catalog.config import load_config
 from backend.catalog.github_client import GithubClient
 from backend.catalog.service import CatalogCollector
-from backend.db import local_engine, session_factory
+from backend.db import configured_engine, session_factory
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
         print(json.dumps({"status": "configuration_valid", "network_executed": False,
                           "config": config.model_dump()}, ensure_ascii=False))
         return
-    engine = local_engine()
+    engine = configured_engine()
     client = GithubClient()
     try:
         result = CatalogCollector(session_factory(engine), client).run(config)
