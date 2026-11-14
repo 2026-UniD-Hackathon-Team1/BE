@@ -53,6 +53,8 @@ def run_pc(client, token, root, pending_path):
 
 def test_scan_timeout_requery_persistence_and_refresh(environment_api, database, tmp_path, monkeypatch):
     """웹 요청과 PC 스캔 및 환경 저장을 연결하고 재조회와 새 스캔을 검증한다."""
+    import galtalka_agent.client as client_module
+    monkeypatch.setattr(client_module.shutil, "which", lambda name: None)
     client, token = environment_api
     (tmp_path / ".codex").mkdir()
     config = tmp_path / ".codex/config.toml"

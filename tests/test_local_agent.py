@@ -24,8 +24,10 @@ def claim_data(kind="scan"):
             "lease_expires_at": expires, "payload": {"scope_id": "approved"}}
 
 
-def test_connect_stores_config_and_restarts_without_leaking_token(tmp_path, capsys):
+def test_connect_stores_config_and_restarts_without_leaking_token(tmp_path, capsys, monkeypatch):
     """코드 교환과 설정 재사용을 확인하고 원문 토큰을 출력하지 않는다."""
+    import galtalka_agent.client as client_module
+    monkeypatch.setattr(client_module.shutil, "which", lambda name: None)
     path = tmp_path / "connection" / "config.json"
     seen = []
 
