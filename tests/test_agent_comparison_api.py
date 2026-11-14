@@ -67,7 +67,7 @@ def test_agent_snapshot_runs_comparison_and_user_can_choose(database, tmp_path):
             "arm='candidate' if (Path.cwd()/'.agents/skills/skill-1/SKILL.md').exists() else 'baseline'\n"
             "Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({'summary':arm,'findings':[]}))\n"
             "print(json.dumps({'type':'item.completed','item':{'type':'command_execution','command':"
-            "'read .agents/skills/skill-1/SKILL.md' if arm=='candidate' else 'read app.py'}}))\n")
+            "'cat .agents/skills/skill-1/SKILL.md' if arm=='candidate' else 'cat app.py'}}))\n")
         result = asyncio.run(run_comparison_job(claim["payload"], project,
             codex_command=[sys.executable, str(fake)]))
         assert result["input_sha256"] == claim["payload"]["input_sha256"]
