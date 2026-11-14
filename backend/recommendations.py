@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 
 from backend.catalog.service import stable_id
+from backend.catalog.inspection import inspect_bundle, public_url, verified_source
 from backend.models import (Asset, AssetVersion, CandidateAdapter, ChangeEvent, Comparison,
                             Environment, Profile, Recommendation, RecommendationDecision,
                             Source, WorkMethod, utc_now)
@@ -44,11 +45,26 @@ def matching_candidates(session, profile):
 
 
 def approved_adapter(session, version, task):
-    """관리자가 검토한 고정 해시의 어댑터만 실행 지원 후보로 인정한다."""
-    return session.scalar(select(CandidateAdapter).where(
+    """후보 상세와 같은 출처 및 무결성 기준을 만족하는 단일 실행 어댑터만 인정한다."""
+    adapters = session.scalars(select(CandidateAdapter).where(
         CandidateAdapter.asset_version_id == version.id,
         CandidateAdapter.approved_bundle_sha256 == version.bundle_sha256,
-        CandidateAdapter.reviewed.is_(True)))
+        CandidateAdapter.reviewed.is_(True), CandidateAdapter.support_level.in_(["comparable", "applicable"]))).all()
+    if len(adapters) != 1:
+        return None
+    metadata = version.metadata_json if isinstance(version.metadata_json, dict) else {}
+    asset = session.get(Asset, version.asset_id)
+    source = session.get(Source, asset.source_id)
+    change = session.scalar(select(ChangeEvent).where(ChangeEvent.to_version_id == version.id)
+        .order_by(ChangeEvent.first_seen_at, ChangeEvent.id).limit(1))
+    url = public_url(metadata.get("source_url")) or public_url(change.source_url if change else None) or public_url(source.url)
+    if not verified_source(metadata, version.revision, source.kind, url, source.url):
+        return None
+    repository = metadata.get("repository", {})
+    if asset.kind != "skill" or isinstance(repository, dict) and repository.get("archived") is True:
+        return None
+    inspection = inspect_bundle(metadata, version.bundle_sha256)
+    return adapters[0] if inspection["integrity_status"] == "verified" and inspection["manifest_present"] else None
 
 
 def recommendation_router(sessions, auth):

@@ -214,21 +214,6 @@ def comparison_router(sessions, auth):
                     for run in runs], "findings": [], "llm_judgment": None,
                 "limits": ["각 방식 1회 실행", "자동 우열 판정 없음"], "is_prerecorded": False}
 
-    @router.get("/api/candidates/{version_id}")
-    def candidate_detail(version_id: str, profile_id: str = Depends(auth)):
-        with sessions() as session:
-            version = session.get(AssetVersion, version_id)
-            if version is None:
-                raise HTTPException(404, detail={"code": "candidate_not_found", "message": "후보를 찾을 수 없습니다."})
-            asset = session.get(Asset, version.asset_id)
-            adapter = session.scalar(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == version_id))
-            return {"candidate_version_id": version.id, "title": asset.display_name,
-                "revision": version.revision, "source_url": version.metadata_json.get("source_url"),
-                "provenance": {"source_url": version.metadata_json.get("source_url"), "bundle_sha256": version.bundle_sha256},
-                "permissions": {"declared": [], "allowed": adapter.permissions if adapter else {}},
-                "risk_signals": [], "replaces": [],
-                "support_level": adapter.support_level if adapter else "information_only"}
-
     @router.get("/api/history")
     def history(profile_id: str = Depends(auth)):
         with sessions() as session:
