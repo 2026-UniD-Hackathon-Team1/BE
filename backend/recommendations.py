@@ -112,7 +112,9 @@ def recommendation_router(sessions, auth):
                     continue
                 adapter = approved_adapter(session, version, task)
                 environment = current_environment(session, profile_id)
-                comparable = bool(adapter and environment and environment.device_id is None and adapter.runner == environment.runner
+                # 연결 프로그램 기기 환경이면 PC에서 실행하고, 기기 없는 로컬 환경이면 서버에 묶인 후보 파일이 있어야 비교할 수 있다
+                comparable = bool(adapter and environment and (environment.device_id is not None or version.artifact_path)
+                                  and adapter.runner == environment.runner
                                   and task in adapter.supported_tasks)
                 comparison = session.scalar(select(Comparison).where(
                     Comparison.profile_id == profile_id, Comparison.recommendation_id == recommendation_id)
