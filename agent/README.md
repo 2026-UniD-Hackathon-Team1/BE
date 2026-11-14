@@ -7,13 +7,14 @@ comparison jobs requested by the service.
 ## Requirements
 
 - Python 3.11 or newer
+- uv
 - Codex CLI installed and signed in for comparison jobs
 - Access to the Galtalka server
 
 ## Install
 
 ```sh
-python -m pip install galtalka-agent
+uv tool install galtalka-agent
 ```
 
 ## Connect a project
