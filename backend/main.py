@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.db import make_engine, session_factory
 from backend.settings import database_url as configured_database_url
-from backend.auth import web_auth
+from backend.auth import web_auth, operator_auth
 from backend.login import login_router
 from backend.agent import agent_router
 from backend.agent_jobs import job_router
@@ -59,6 +59,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     sessions = session_factory(engine)
     # 로그인으로 받은 세션을 우선 쓰고, 없으면 기존 로컬 토큰(X-Local-Token)을 받는다
     auth = web_auth(sessions, local_token if local_token is not None else os.environ.get("APP_LOCAL_TOKEN"))
+    operator = operator_auth(local_token if local_token is not None else os.environ.get("APP_LOCAL_TOKEN"))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -90,8 +91,8 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(job_router(sessions, auth))
     app.include_router(environment_router(sessions, auth, wait_timeout=agent_wait_timeout))
     app.include_router(candidate_router(sessions, auth))
-    app.include_router(catalog_router(sessions, auth))
-    app.include_router(refresh_router(sessions, auth))
+    app.include_router(catalog_router(sessions, operator))
+    app.include_router(refresh_router(sessions, operator))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):

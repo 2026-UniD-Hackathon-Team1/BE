@@ -55,3 +55,17 @@ def web_auth(sessions, expected_token: str | None):
             return user_id
         return local(provided)
     return require_user
+
+
+def operator_auth(expected_token: str | None):
+    """공통 수집 운영은 서버 운영 토큰으로만 허용하고 일반 계정과 분리한다."""
+    local = local_auth(expected_token)
+
+    def require_operator(provided: str | None = Security(local_token_header),
+                         credentials: HTTPAuthorizationCredentials | None = Security(session_bearer)):
+        """로그인만으로 전역 수집 예산이나 예약을 바꾸지 못하게 한다."""
+        if credentials is not None and not provided:
+            raise HTTPException(403, detail={"code": "operator_required", "message": "수집 운영 권한이 필요합니다."})
+        return local(provided)
+
+    return require_operator
