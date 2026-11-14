@@ -18,6 +18,7 @@ from backend.input_store import register_input, load_input
 from backend.comparison_contract import ComparisonDetail
 from backend.agent_jobs import JobSpec, enqueue_job, read_job
 from backend.models import AgentJob
+from backend.environment_data import current_environment
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "experiments" / "skill_eval" / "fixture"
@@ -78,17 +79,18 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
     @router.post("/api/inputs", status_code=201)
     async def register(body: InputRegistration, response: Response, profile_id: str = Depends(auth)):
         with sessions() as session:
-            environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
+            environment = current_environment(session, profile_id)
             if environment is None:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "먼저 작업 경로를 승인해 주세요."})
             root = Path(environment.scan_root)
             agent_backed = environment.device_id is not None
+            device_id = environment.device_id
         if agent_backed:
             input_id = "input_" + uuid4().hex
             spec = JobSpec(kind="snapshot_inputs", request_key="input:" + input_id,
                 payload={"schema_version": 1, "input_id": input_id, "task_type": body.task_type,
                     "relative_paths": body.relative_paths, "confirmed_upload_scope": True})
-            await asyncio.to_thread(enqueue_job, sessions, profile_id, spec)
+            await asyncio.to_thread(enqueue_job, sessions, profile_id, spec, device_id=device_id)
             deadline = time.monotonic() + wait_timeout
             while True:
                 value = await asyncio.to_thread(input_outcome, profile_id, input_id)
@@ -100,7 +102,7 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
                     return value
                 await asyncio.sleep(min(0.25, remaining))
         try:
-            manifest = register_input(root, body.relative_paths, ROOT / "runtime" / "inputs", body.task_type)
+            manifest = register_input(root, body.relative_paths, ROOT / "runtime" / "inputs", body.task_type, profile_id=profile_id)
         except (ValueError, OSError) as error:
             raise HTTPException(422, detail={"code": "invalid_input_path", "message": "승인된 경로의 일반 파일만 선택해 주세요."}) from error
         return manifest
@@ -109,7 +111,7 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
     def suggestions(task_type: str = Query(..., pattern="^(code_review|test_generation)$"), profile_id: str = Depends(auth)):
         if task_type != "code_review" or not (FIXTURE / "app.py").is_file():
             return []
-        manifest = register_input(FIXTURE, ["app.py"], ROOT / "runtime" / "inputs", task_type)
+        manifest = register_input(FIXTURE, ["app.py"], ROOT / "runtime" / "inputs", task_type, profile_id=profile_id)
         return [{"suggestion_id": manifest["input_id"], "kind": "fixture", "label": "코드 리뷰 예제",
                  "meta": "파일 1개", "relative_paths": ["app.py"], "excluded_paths": []}]
 
@@ -127,6 +129,7 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
             if comparison.status != "queued":
                 return
             manifests = comparison.input_manifest
+            owner_id = comparison.profile_id
             expected_input_sha256 = comparison.input_sha256
             comparison.status = "running"
             for run in session.scalars(select(Run).where(Run.comparison_id == comparison_id)):
@@ -136,7 +139,7 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
                 raise ValueError("comparison input changed")
             for manifest in manifests:
                 input_id = manifest["input_id"]
-                current = load_input(input_id, ROOT / "runtime" / "inputs")
+                current = load_input(input_id, ROOT / "runtime" / "inputs", profile_id=owner_id)
                 if current != manifest:
                     raise ValueError("comparison input changed")
                 result = execute_comparison(root=ROOT / "runtime" / "inputs" / input_id / "files",
@@ -207,12 +210,12 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
             if len(set(body.input_ids)) != len(body.input_ids) or body.task_type != "code_review" or body.task_type != method.task_type or not body.confirmed_upload_scope:
                 raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "비교 입력을 확인해 주세요."})
             try:
-                manifests = [load_input(input_id, ROOT / "runtime" / "inputs") for input_id in body.input_ids]
+                manifests = [load_input(input_id, ROOT / "runtime" / "inputs", profile_id=profile_id) for input_id in body.input_ids]
             except (ValueError, OSError):
                 raise HTTPException(422, detail={"code": "invalid_input_id", "message": "등록된 비교 입력을 다시 선택해 주세요."}) from None
             if any(manifest.get("task_type") != body.task_type for manifest in manifests):
                 raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "입력의 작업 유형이 비교 유형과 다릅니다."})
-            environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
+            environment = current_environment(session, profile_id)
             if environment is None or not version.artifact_path:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "실행 환경과 후보 파일을 확인해 주세요."})
             if environment.device_id is not None:

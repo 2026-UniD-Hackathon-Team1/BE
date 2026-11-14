@@ -12,6 +12,7 @@ from backend.catalog.inspection import PERMISSION_LABELS, inspect_bundle, public
 from backend.models import (AgentDevice, Asset, AssetVersion, CandidateAdapter, ChangeEvent,
                             Environment, Recommendation, Source)
 from backend.schemas import ErrorResponse, TagEvidence
+from backend.environment_data import current_environment
 
 
 def short_text(value, limit=1000):
@@ -38,9 +39,7 @@ def compatibility(session, profile_id, adapter):
     """알려진 도구 차이를 표시하고 실제 기기의 준비가 확인될 때만 호환을 확정한다."""
     if adapter is None:
         return "unknown", ["검토된 실행 어댑터가 없어 호환성을 확인하지 못했습니다."]
-    environment = session.scalar(select(Environment).join(AgentDevice, AgentDevice.id == Environment.device_id)
-        .where(Environment.profile_id == profile_id, AgentDevice.revoked_at.is_(None))
-        .order_by(Environment.scanned_at.desc()).limit(1))
+    environment = current_environment(session, profile_id)
     if environment is None or environment.runner == "unknown":
         return "unknown", ["현재 프로젝트의 실행 환경을 확인해 주세요."]
     if adapter.runner != environment.runner:

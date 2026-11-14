@@ -80,9 +80,14 @@ class DeviceList(BaseModel):
     devices: list[AgentDeviceView]
 
 
-def authenticated_device(session, credentials):
+def authenticated_device(session, credentials, *, lock_profile=False):
     """기기 행을 잠그고 해제된 토큰의 작업 접근과 상태 갱신을 거부한다."""
     if credentials is not None:
+        if lock_profile:
+            profile_id = session.scalar(select(AgentDevice.profile_id).where(
+                AgentDevice.token_hash == secret_hash(credentials.credentials), AgentDevice.revoked_at.is_(None)))
+            if profile_id is not None:
+                session.scalar(select(Profile).where(Profile.id == profile_id).with_for_update())
         device = session.scalar(select(AgentDevice).where(
             AgentDevice.token_hash == secret_hash(credentials.credentials), AgentDevice.revoked_at.is_(None))
             .with_for_update())
@@ -168,7 +173,8 @@ def agent_router(sessions, web_auth):
         response.headers["Cache-Control"] = "no-store"
         with sessions() as session:
             device = session.scalar(select(AgentDevice).where(AgentDevice.profile_id == profile_id)
-                .order_by(AgentDevice.revoked_at.is_(None).desc(), AgentDevice.last_seen_at.desc(), AgentDevice.id.desc()))
+                .order_by(AgentDevice.revoked_at.is_(None).desc(), AgentDevice.is_primary.desc(),
+                          AgentDevice.last_seen_at.desc(), AgentDevice.id.desc()))
             if device is None:
                 return AgentStatus(status="never_connected")
             connected = device.revoked_at is None and device.last_seen_at >= iso_time(current_time() - timedelta(seconds=60))

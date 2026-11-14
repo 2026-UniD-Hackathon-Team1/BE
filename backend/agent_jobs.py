@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
 import backend.agent as agent
-from backend.models import AgentDevice, AgentJob
+from backend.models import AgentDevice, AgentJob, Profile
 from backend.environment_data import ScanFailure, store_environment
 from pydantic import ValidationError
 from backend.schemas import ErrorResponse
@@ -45,6 +45,7 @@ class JobSpec(BaseModel):
 
 class JobView(BaseModel):
     job_id: str
+    device_id: str
     kind: JobKind
     status: Literal["queued", "running", "done", "failed", "cancelled"]
     attempts: int
@@ -92,41 +93,49 @@ class ResultInput(BaseModel):
 
 def job_view(job):
     """웹 조회에는 실행 소유권 토큰과 작업 내부 payload를 노출하지 않는다."""
-    return JobView(job_id=job.id, kind=job.kind, status=job.status, attempts=job.attempts,
+    return JobView(job_id=job.id, device_id=job.device_id, kind=job.kind, status=job.status, attempts=job.attempts,
         progress_step=job.progress_step, progress_detail=job.progress_detail,
         result=job.result_json, message=job.message, created_at=job.created_at, updated_at=job.updated_at,
         started_at=job.started_at, finished_at=job.finished_at)
 
 
-def enqueue_job(sessions, profile_id: str, spec: JobSpec, *, reuse_pending=False):
+def enqueue_job(sessions, profile_id: str, spec: JobSpec, *, reuse_pending=False, device_id=None):
     """서버 내부 생산자가 같은 요청 키로 작업을 중복 생성하지 않도록 한다."""
-    digest = agent.secret_hash(canonical_json({"kind": spec.kind, "payload": spec.payload}))
     with sessions.begin() as session:
-        device = session.scalar(select(AgentDevice).where(AgentDevice.profile_id == profile_id,
-            AgentDevice.revoked_at.is_(None), AgentDevice.is_primary.is_(True)).with_for_update())
-        existing = session.scalar(select(AgentJob).where(AgentJob.profile_id == profile_id,
-            AgentJob.request_key == spec.request_key))
-        if existing is not None:
-            if existing.request_hash != digest:
-                raise HTTPException(409, detail={"code": "JOB_REQUEST_CONFLICT", "message": "같은 요청 키에 다른 작업이 등록돼 있습니다."})
-            return job_view(existing)
-        now = agent.current_time()
-        if device is None or device.last_seen_at < agent.iso_time(now - timedelta(seconds=60)):
-            raise HTTPException(409, detail={"code": "AGENT_OFFLINE", "message": "연결 프로그램이 꺼져 있어요."})
-        if reuse_pending:
-            pending = session.scalar(select(AgentJob).where(AgentJob.device_id == device.id,
-                AgentJob.request_hash == digest, AgentJob.status.in_(["queued", "running"]))
-                .order_by(AgentJob.created_at).limit(1))
-            if pending is not None:
-                return job_view(pending)
-        if spec.kind == "run_comparison" and not device.codex_ready:
-            raise HTTPException(409, detail={"code": "CODEX_NOT_READY", "message": "연결 프로그램의 Codex 로그인 상태를 확인해 주세요."})
-        job = AgentJob(id="job_" + uuid4().hex, profile_id=profile_id, device_id=device.id,
-            kind=spec.kind, request_key=spec.request_key, request_hash=digest, payload=spec.payload,
-            status="queued", attempts=0, created_at=agent.iso_time(now), updated_at=agent.iso_time(now))
-        session.add(job)
-        session.flush()
-        return job_view(job)
+        return enqueue_locked_job(session, profile_id, spec, reuse_pending=reuse_pending, device_id=device_id)
+
+
+def enqueue_locked_job(session, profile_id, spec, *, reuse_pending=False, device_id=None):
+    """업무 기록과 같은 트랜잭션에서 승인된 기기에 작업을 고정한다."""
+    digest = agent.secret_hash(canonical_json({"kind": spec.kind, "payload": spec.payload}))
+    session.scalar(select(Profile).where(Profile.id == profile_id).with_for_update())
+    device = session.scalar(select(AgentDevice).where(AgentDevice.profile_id == profile_id,
+        AgentDevice.revoked_at.is_(None), AgentDevice.is_primary.is_(True)).with_for_update())
+    existing = session.scalar(select(AgentJob).where(AgentJob.profile_id == profile_id,
+        AgentJob.request_key == spec.request_key))
+    if existing is not None:
+        if existing.request_hash != digest or device_id is not None and existing.device_id != device_id:
+            raise HTTPException(409, detail={"code": "JOB_REQUEST_CONFLICT", "message": "같은 요청 키의 내용이나 대상 기기가 다릅니다."})
+        return job_view(existing)
+    if device_id is not None and (device is None or device.id != device_id):
+        raise HTTPException(409, detail={"code": "DEVICE_CHANGED", "message": "작업을 승인한 기기를 기본 기기로 선택한 뒤 다시 요청해 주세요."})
+    now = agent.current_time()
+    if device is None or device.last_seen_at < agent.iso_time(now - timedelta(seconds=60)):
+        raise HTTPException(409, detail={"code": "AGENT_OFFLINE", "message": "연결 프로그램이 꺼져 있어요."})
+    if reuse_pending:
+        pending = session.scalar(select(AgentJob).where(AgentJob.device_id == device.id,
+            AgentJob.request_hash == digest, AgentJob.status.in_(["queued", "running"]))
+            .order_by(AgentJob.created_at).limit(1))
+        if pending is not None:
+            return job_view(pending)
+    if spec.kind == "run_comparison" and not device.codex_ready:
+        raise HTTPException(409, detail={"code": "CODEX_NOT_READY", "message": "연결 프로그램의 Codex 로그인 상태를 확인해 주세요."})
+    job = AgentJob(id="job_" + uuid4().hex, profile_id=profile_id, device_id=device.id,
+        kind=spec.kind, request_key=spec.request_key, request_hash=digest, payload=spec.payload,
+        status="queued", attempts=0, created_at=agent.iso_time(now), updated_at=agent.iso_time(now))
+    session.add(job)
+    session.flush()
+    return job_view(job)
 
 
 def expire_jobs(session, device_id, now):
@@ -184,9 +193,10 @@ def job_router(sessions, web_auth):
         """기기별 실행 한 개와 원자적 잠금으로 동시 폴링의 중복 인수를 막는다."""
         response.headers["Cache-Control"] = "no-store"
         with sessions.begin() as session:
-            device = agent.authenticated_device(session, credentials)
+            device = agent.authenticated_device(session, credentials, lock_profile=True)
             now = agent.current_time()
-            expire_jobs(session, device.id, now)
+            for device_id in session.scalars(select(AgentDevice.id).where(AgentDevice.profile_id == device.profile_id)):
+                expire_jobs(session, device_id, now)
             running = session.scalar(select(AgentJob.id).where(AgentJob.profile_id == device.profile_id,
                 AgentJob.status == "running"))
             if running is not None or not device.is_primary:

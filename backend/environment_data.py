@@ -7,9 +7,27 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from backend.models import Environment
+from backend.models import Environment, AgentDevice
+from sqlalchemy import select
 
 Scope = Literal["config", "skills", "code"]
+
+
+def current_environment(session, profile_id):
+    """기본 기기의 환경만 선택하고 다른 기기나 과거 로컬 환경으로 대체하지 않는다."""
+    primary = session.scalar(select(AgentDevice.id).where(AgentDevice.profile_id == profile_id,
+        AgentDevice.is_primary.is_(True), AgentDevice.revoked_at.is_(None)))
+    query = select(Environment).where(Environment.profile_id == profile_id)
+    if primary is not None:
+        query = query.where(Environment.device_id == primary)
+    else:
+        paired = session.scalar(select(AgentDevice.id).where(AgentDevice.profile_id == profile_id).limit(1))
+        if paired is not None:
+            return None
+        query = query.where(Environment.device_id.is_(None))
+    return session.scalar(query.order_by(Environment.scanned_at.desc()).limit(1))
+
+
 FileName = Literal["pyproject.toml", "requirements.txt", "package.json", "Cargo.toml", "go.mod", ".codex/config.toml"]
 Summary = Literal["Python 프로젝트 설정", "Python 패키지 목록", "JavaScript 프로젝트 설정", "Rust 프로젝트 설정", "Go 프로젝트 설정", "Codex 프로젝트 설정"]
 

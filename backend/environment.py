@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from backend.agent_jobs import JobSpec, enqueue_job, read_job
-from backend.environment_data import EnvironmentView, ScanInput, environment_view
+from backend.environment_data import EnvironmentView, ScanInput, environment_view, current_environment
 from backend.models import AgentDevice, Environment
 from backend.schemas import ErrorResponse
 
@@ -79,9 +79,7 @@ def environment_router(sessions, auth, *, wait_timeout=30.0):
         def latest():
             """현재 연결 기기의 환경만 짧은 DB 조회로 읽는다."""
             with sessions() as session:
-                value = session.scalar(select(Environment).join(AgentDevice, AgentDevice.id == Environment.device_id)
-                    .where(Environment.profile_id == profile_id, AgentDevice.revoked_at.is_(None))
-                    .order_by(Environment.scanned_at.desc()).limit(1))
+                value = current_environment(session, profile_id)
                 return environment_view(value) if value is not None else None
         value = await asyncio.to_thread(latest)
         if value is None:

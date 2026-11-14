@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from backend.agent_jobs import JobSpec, enqueue_job
+from backend.agent_jobs import JobSpec, enqueue_job, enqueue_locked_job
 from backend.models import (AgentJob, ApplyRecord, Asset, AssetVersion, CandidateAdapter,
-                            Comparison, EventLog, Run, Snapshot, utc_now)
+                            Comparison, EventLog, Run, Snapshot, Profile, utc_now)
 
 
 class PreviewInput(BaseModel):
@@ -71,7 +71,7 @@ def preview_view(job):
         fail(404, "PREVIEW_NOT_FOUND", "적용 미리보기를 찾을 수 없습니다.")
     result = job.result_json if job.status == "done" else None
     if result is None:
-        return {"preview_id": job.id, "status": job.status, "message": job.message}
+        return {"preview_id": job.id, "device_id": job.device_id, "status": job.status, "message": job.message}
     if (not isinstance(result, dict) or result.get("status") != "preview"
         or result.get("candidate_sha256") != job.payload["candidate_sha256"]
         or not isinstance(result.get("changes"), list)
@@ -80,11 +80,11 @@ def preview_view(job):
             (not isinstance(result["current_state_sha256"], str) or
              not re.fullmatch(r"[a-f0-9]{64}", result["current_state_sha256"])))):
         fail(409, "INVALID_PREVIEW_RESULT", "연결 프로그램의 미리보기 결과를 확인해 주세요.")
-    fingerprint = [job.payload["comparison_id"], result["target_relative_path"],
+    fingerprint = [job.device_id, job.payload["comparison_id"], result["target_relative_path"],
                    result.get("current_state_sha256"), result["candidate_sha256"], result["changes"]]
     change_hash = hashlib.sha256(json.dumps(fingerprint, sort_keys=True,
         ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
-    return {"preview_id": job.id, "status": "done", "target_path": result["target_relative_path"],
+    return {"preview_id": job.id, "device_id": job.device_id, "status": "done", "target_path": result["target_relative_path"],
         "current_state_sha256": result.get("current_state_sha256"),
         "candidate_version_id": job.payload["candidate_version_id"],
         "candidate_sha256": result["candidate_sha256"], "changes": result["changes"],
@@ -117,6 +117,7 @@ def apply_router(sessions, auth):
     @router.post("/api/apply", status_code=202)
     def apply(body: ApplyInput, profile_id: str = Depends(auth)):
         with sessions.begin() as session:
+            session.scalar(select(Profile).where(Profile.id == profile_id).with_for_update())
             job = owned_job(session, body.preview_id, profile_id, "apply")
             if job.payload.get("phase") != "preview" or job.status != "done":
                 fail(409, "PREVIEW_NOT_READY", "적용 미리보기가 완료될 때까지 기다려 주세요.")
@@ -142,17 +143,12 @@ def apply_router(sessions, auth):
                 snapshot_id=snapshot_id, candidate_version_id=version.id,
                 target_path=view["target_path"], status="applying"))
             job.payload = {**job.payload, "apply_id": apply_id}
-        payload = {"phase": "install", "apply_id": apply_id, "skill_name": name,
-            "files": files, "candidate_sha256": version.bundle_sha256,
-            "expected_current_sha256": view["current_state_sha256"]}
-        try:
-            queued = enqueue_job(sessions, profile_id, JobSpec(kind="apply",
-                request_key="install:" + apply_id, payload=payload))
-        except Exception:
-            with sessions.begin() as session:
-                session.get(ApplyRecord, apply_id).status = "recovery_required"
-            raise
-        return {"apply_id": apply_id, "status": "applying", "job_id": queued.job_id}
+            payload = {"phase": "install", "apply_id": apply_id, "skill_name": name,
+                "files": files, "candidate_sha256": version.bundle_sha256,
+                "expected_current_sha256": view["current_state_sha256"]}
+            queued = enqueue_locked_job(session, profile_id, JobSpec(kind="apply",
+                request_key="install:" + apply_id, payload=payload), device_id=job.device_id)
+        return {"apply_id": apply_id, "status": "applying", "job_id": queued.job_id, "device_id": queued.device_id}
 
     def reconcile(session, record):
         install = session.scalar(select(AgentJob).where(AgentJob.request_key == "install:" + record.id,
@@ -213,20 +209,23 @@ def apply_router(sessions, auth):
         if not body.confirmed:
             fail(422, "CONFIRMATION_REQUIRED", "복원 여부를 확인해 주세요.")
         with sessions.begin() as session:
+            session.scalar(select(Profile).where(Profile.id == profile_id).with_for_update())
             record = session.get(ApplyRecord, apply_id)
             comparison = session.get(Comparison, record.comparison_id) if record else None
             if comparison is None or comparison.profile_id != profile_id:
                 fail(404, "APPLY_NOT_FOUND", "적용 이력을 찾을 수 없습니다.")
-            _, previous = reconcile(session, record)
+            install, previous = reconcile(session, record)
             if previous:
                 return {"apply_id": apply_id, "status": record.status, "job_id": previous.id}
             if record.status != "applied":
                 fail(409, "ROLLBACK_UNAVAILABLE", "적용이 끝난 스킬만 복원할 수 있습니다.")
+            if install is None:
+                fail(409, "APPLY_DEVICE_UNKNOWN", "기존 적용 기기를 확인할 수 없어 자동 복원할 수 없습니다.")
             snapshot = session.get(Snapshot, record.snapshot_id)
             payload = {"apply_id": apply_id, "skill_name": record.target_path.rsplit("/", 1)[-1],
                 "applied_sha256": record.applied_sha256, "before_sha256": snapshot.before_sha256}
-        queued = enqueue_job(sessions, profile_id, JobSpec(kind="rollback",
-            request_key="rollback:" + apply_id, payload=payload))
-        return {"apply_id": apply_id, "status": "rollback_queued", "job_id": queued.job_id}
+            queued = enqueue_locked_job(session, profile_id, JobSpec(kind="rollback",
+                request_key="rollback:" + apply_id, payload=payload), device_id=install.device_id)
+        return {"apply_id": apply_id, "status": "rollback_queued", "job_id": queued.job_id, "device_id": queued.device_id}
 
     return router

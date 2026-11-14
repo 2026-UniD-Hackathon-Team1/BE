@@ -5,6 +5,7 @@ from sqlalchemy import select
 from backend.catalog.service import stable_id
 from backend.catalog.metadata import public_facts
 from backend.candidates import safe_evidence
+from backend.environment_data import current_environment
 from backend.catalog.inspection import inspect_bundle, public_url, verified_source
 from backend.models import (Asset, AssetVersion, CandidateAdapter, ChangeEvent, Comparison,
                             Environment, Profile, Recommendation, RecommendationDecision,
@@ -110,8 +111,7 @@ def recommendation_router(sessions, auth):
                 if status != "new" and not include_hidden:
                     continue
                 adapter = approved_adapter(session, version, task)
-                environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id)
-                    .order_by(Environment.scanned_at.desc()).limit(1))
+                environment = current_environment(session, profile_id)
                 comparable = bool(adapter and environment and environment.device_id is None and adapter.runner == environment.runner
                                   and task in adapter.supported_tasks)
                 comparison = session.scalar(select(Comparison).where(

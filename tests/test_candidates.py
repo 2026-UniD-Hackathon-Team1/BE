@@ -102,7 +102,7 @@ def test_reviewed_adapter_does_not_imply_ready_or_audited_environment(candidate)
     assert item["permissions"]["allowed"] == {"file_read": True}
     with sessions.begin() as session:
         session.add(AgentDevice(id="device-real", profile_id="local", token_hash="fixture-hash", device_name="fixture",
-            agent_version="test", codex_version="test-version", codex_ready=True, last_seen_at=utc_now()))
+            agent_version="test", is_primary=True, codex_version="test-version", codex_ready=True, last_seen_at=utc_now()))
         session.flush()
         session.add(Environment(id="env-real", profile_id="local", device_id="device-real", runner="codex_cli",
             runner_version="test-version", model_id="test-model", installed_skills=[], settings_hash="fixture", scan_root="agent://fixture"))
