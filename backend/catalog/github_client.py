@@ -4,6 +4,7 @@ import binascii
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -49,9 +50,14 @@ def require_sha(value):
 
 
 class GithubClient:
-    def __init__(self, token: str | None = None, *, transport=None):
+    def __init__(self, token: str | None = None, *, transport=None, max_requests=50, timeout_seconds=120):
         """명시적으로 전달된 토큰만 사용하며 PC의 인증 설정은 읽지 않는다."""
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "galatalkka-catalog"}
+        if not 1 <= max_requests <= 100 or not 1 <= timeout_seconds <= 120:
+            raise ValueError("invalid collection budget")
+        self.max_requests = max_requests
+        self.request_count = 0
+        self.deadline = time.monotonic() + timeout_seconds
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self.client = httpx.Client(base_url="https://api.github.com", headers=headers,
@@ -65,8 +71,13 @@ class GithubClient:
         """응답 크기를 제한하고 인증 오류와 요청 제한을 구분해 JSON을 읽는다."""
         if (not path.startswith("/repos/") and path != "/search/repositories") or "?" in path or "#" in path:
             raise CollectionError("invalid_api_path")
+        self.check_budget()
+        if self.request_count >= self.max_requests:
+            raise CollectionError("request_budget_exceeded")
+        self.request_count += 1
         try:
-            with self.client.stream("GET", path, params=params) as response:
+            with self.client.stream("GET", path, params=params,
+                                    timeout=min(15, max(0.1, self.deadline - time.monotonic()))) as response:
                 status = response.status_code
                 if status == 429 or (status == 403 and (
                     response.headers.get("X-RateLimit-Remaining") == "0" or response.headers.get("Retry-After")
@@ -79,15 +90,22 @@ class GithubClient:
                     raise CollectionError(f"http_{status}")
                 chunks, total = [], 0
                 for chunk in response.iter_bytes():
+                    self.check_budget()
                     total += len(chunk)
                     if total > MAX_RESPONSE_BYTES:
                         raise CollectionError("response_too_large")
                     chunks.append(chunk)
+                self.check_budget()
                 return json.loads(b"".join(chunks))
         except httpx.RequestError:
             raise CollectionError("network_error") from None
         except (ValueError, UnicodeError):
             raise CollectionError("invalid_json") from None
+
+    def check_budget(self):
+        """응답 대기와 파일 읽기를 포함한 전체 수집의 제한 시간을 검사한다."""
+        if time.monotonic() >= self.deadline:
+            raise CollectionError("collection_deadline_exceeded")
 
     def discover(self, query: str, limit: int) -> list[RepositoryConfig]:
         """작업 관련 공개 검색에서 중복 없는 저장소 후보를 제한된 수만큼 발견한다."""
