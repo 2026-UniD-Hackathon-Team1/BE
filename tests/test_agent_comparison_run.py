@@ -4,15 +4,26 @@ import hashlib
 import json
 import sys
 from types import SimpleNamespace
+from typing import get_args
 
 import httpx
 import pytest
 
 from galtalka_agent.comparison_inputs import freeze
-from galtalka_agent.comparison_run import run_arm, run_comparison_job
+from galtalka_agent.comparison_run import SCHEMA, review_result, run_arm, run_comparison_job
 from galtalka_agent.client import AgentClient
 from galtalka_agent.config import AgentConfig, save_config
 from galtalka_agent.failures import JobFailure
+from backend.comparison_contract import ReviewFinding
+
+
+def test_generated_review_severities_match_server_contract():
+    allowed = SCHEMA["properties"]["findings"]["items"]["properties"]["severity"]["enum"]
+    assert set(allowed) == set(get_args(ReviewFinding.model_fields["severity"].annotation))
+    for severity in allowed:
+        assert review_result({"summary": "reviewed", "findings": [{"path": "app.py", "line": 1,
+            "severity": severity, "issue": "issue", "evidence": "evidence",
+            "suggested_fix": "fix"}]})
 
 
 def test_pc_comparison_keeps_input_files_local_and_returns_two_results(tmp_path):
