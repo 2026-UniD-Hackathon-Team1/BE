@@ -11,6 +11,7 @@ from galtalka_agent.client import AgentClient
 from galtalka_agent.config import (AgentConfig, AgentError, approved_root, default_config_path,
     load_config, normalize_server, runtime_lock, save_config)
 from galtalka_agent.worker import AgentRunner
+from galtalka_agent.scan import scan
 
 
 async def connect(args, transport=None):
@@ -36,7 +37,7 @@ async def run(args, transport=None):
         config = load_config(args.config)
         client = AgentClient(config.server_url, config.agent_token, transport=transport)
         try:
-            await AgentRunner(client, config, args.config).run(once=args.once)
+            await AgentRunner(client, config, args.config, handlers={"scan": scan}).run(once=args.once)
         finally:
             await client.close()
 

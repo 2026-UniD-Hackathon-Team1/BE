@@ -7,6 +7,7 @@ import time
 
 from galtalka_agent.client import APIError
 from galtalka_agent.config import AgentError, read_json, valid_token, write_json
+from galtalka_agent.failures import JobFailure
 
 
 class AgentRunner:
@@ -121,6 +122,9 @@ class AgentRunner:
                 return
             self.save_report(job, "failed", message="작업 진행을 확인하지 못해 실행을 중단했습니다.")
             raise
+        except JobFailure as error:
+            await self.cancel_handler(task)
+            self.save_report(job, "failed", result={"error_code": error.code}, message=str(error))
         except Exception:
             await self.cancel_handler(task)
             self.save_report(job, "failed", message="작업 처리에 실패했습니다. 연결 프로그램 상태를 확인해 주세요.")
