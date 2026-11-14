@@ -192,6 +192,7 @@ def recommendation_router(sessions, auth):
                     continue
                 adapter = approved_adapter(session, version, task)
                 environment = current_environment(session, profile_id)
+                # ?? ??? ??? ???? ?? ??? ??? ??? ?? ??? ?? ? ????.
                 comparable = bool(adapter and method and environment and adapter.runner == environment.runner
                                   and task == "code_review" and task in version.tags.get("task_types", [])
                                   and task in adapter.supported_tasks and (

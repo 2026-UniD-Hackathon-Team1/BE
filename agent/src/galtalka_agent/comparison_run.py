@@ -18,8 +18,10 @@ from galtalka_agent.failures import JobFailure
 SCHEMA = {"type": "object", "additionalProperties": False,
     "properties": {"summary": {"type": "string"}, "findings": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
-        "properties": {key: {"type": "integer" if key == "line" else "string"}
-            for key in ("path", "line", "severity", "issue", "evidence", "suggested_fix")},
+        "properties": {"path": {"type": "string"}, "line": {"type": "integer"},
+            "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+            "issue": {"type": "string"}, "evidence": {"type": "string"},
+            "suggested_fix": {"type": "string"}},
         "required": ["path", "line", "severity", "issue", "evidence", "suggested_fix"]}}},
     "required": ["summary", "findings"]}
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024

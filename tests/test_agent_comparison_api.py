@@ -17,7 +17,7 @@ WEB = {"X-Local-Token": "test-token"}
 DEVICE = {"Authorization": "Bearer " + "t" * 43}
 
 
-def test_agent_snapshot_runs_comparison_and_user_can_choose(database, tmp_path):
+def test_agent_snapshot_runs_comparison_and_user_can_choose(database, tmp_path, monkeypatch):
     engine, sessions, _ = database
     project = tmp_path / "project"
     project.mkdir()
@@ -36,7 +36,7 @@ def test_agent_snapshot_runs_comparison_and_user_can_choose(database, tmp_path):
         session.add(WorkMethod(id="wm_compare", version=1, profile_id="local", task_type="code_review",
             prompt_text="Review app.py", is_active=True))
         version = session.get(AssetVersion, "demo_ver_01")
-        version.metadata_json = {"bundle": bundle}
+        version.metadata_json = {**(version.metadata_json or {}), "bundle": bundle}  # 추천 카드 조건(데모 태그)은 유지
         version.bundle_sha256 = digest
         session.add(CandidateAdapter(id="adapter_compare", asset_version_id=version.id,
             runner="codex_cli", supported_tasks=["code_review"],
@@ -55,6 +55,16 @@ def test_agent_snapshot_runs_comparison_and_user_can_choose(database, tmp_path):
             "confirmed_upload_scope": True, "idempotency_key": "agent-comparison"})
         assert created.status_code == 202, created.text
         comparison_id = created.json()["comparison_id"]
+        # 홈의 "진행 중인 비교"에 보이고, 끝나면 빠진다
+        assert [c["comparison_id"] for c in client.get("/api/comparisons?active=true", headers=WEB).json()] == [comparison_id]
+        # 연결 프로그램 기기 환경에서도 승인된 후보는 비교할 수 있는 카드로 보인다
+        # 출처 검증은 별도 테스트에서 하므로 여기서는 승인 어댑터가 있다고 보고 기기 환경 규칙만 본다
+        monkeypatch.setattr("backend.recommendations.approved_adapter",
+                            lambda session, version, task: session.get(CandidateAdapter, "adapter_compare"))
+        client.put("/api/profile", headers=WEB, json={"role": "developer", "primary_language": "python",
+                                                     "task_types": ["code_review"]})
+        cards = client.get("/api/recommendations", headers=WEB).json()["items"]
+        assert [c["support_level"] for c in cards if c["candidate_version_id"] == "demo_ver_01"] == ["comparable"]
         claim = client.get("/api/agent/jobs", headers=DEVICE).json()
         assert claim["kind"] == "run_comparison"
         assert claim["payload"]["inputs"] == [manifest]
@@ -76,6 +86,8 @@ def test_agent_snapshot_runs_comparison_and_user_can_choose(database, tmp_path):
         detail = client.get(f"/api/comparisons/{comparison_id}", headers=WEB)
         assert detail.status_code == 200, detail.text
         assert detail.json()["status"] == "done"
+        assert detail.json()["created_at"] and detail.json()["completed_at"]
+        assert client.get("/api/comparisons?active=true", headers=WEB).json() == []
         assert {run["arm"]: run["inputs"][0]["result"]["summary"] for run in detail.json()["runs"]} == {
             "baseline": "baseline", "candidate": "candidate"}
         assert client.patch(f"/api/comparisons/{comparison_id}/decision", headers=WEB,

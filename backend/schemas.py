@@ -37,7 +37,7 @@ class CandidateSummary(BaseModel):
     bundle_sha256: str
     source_url: str
     first_seen_at: str
-    support_level: Literal["information_only"] = "information_only"
+    support_level: Literal["information_only", "comparable", "applicable"] = "information_only"
     performance_status: Literal["not_compared"] = "not_compared"
     classification_status: str
     tag_evidence: list[TagEvidence] = Field(default_factory=list)

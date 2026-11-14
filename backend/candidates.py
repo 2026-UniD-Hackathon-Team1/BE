@@ -1,9 +1,11 @@
 """고정 후보 버전의 출처와 선언된 권한 및 검토 상태를 제공한다."""
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
+import re
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
 from backend.candidate_schemas import CandidateDetail, Maintainer, SourceMetadata
@@ -22,6 +24,11 @@ def short_text(value, limit=1000):
     return " ".join(value.split())[:limit] if isinstance(value, str) and value.strip() else None
 
 
+class ComparisonApproval(BaseModel):
+    expected_bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    confirmed: bool
+
+
 def reviewed_adapter(adapters, digest):
     """단일 검토 어댑터만 선택하며 불일치와 여러 실행 후보를 구분한다."""
     valid = [item for item in adapters if item.reviewed and item.approved_bundle_sha256 == digest
@@ -35,6 +42,15 @@ def reviewed_adapter(adapters, digest):
     if any(item.reviewed and item.approved_bundle_sha256 != digest for item in adapters):
         return None, "hash_mismatch"
     return None, "unreviewed" if adapters else "missing"
+
+
+def executable_adapter(asset, version, metadata, adapter, verified, inspection):
+    """??? ???? ?? ?? ? ??? ??? ??? ??? ?? ???? ????."""
+    repository = metadata.get("repository", {})
+    repository = repository if isinstance(repository, dict) else {}
+    return adapter if (adapter and verified and inspection["integrity_status"] == "verified"
+        and asset.kind == "skill" and inspection["manifest_present"] and repository.get("archived") is not True
+        and not repository_fixture(asset, version)) else None
 
 
 def compatibility(session, profile_id, adapter):
@@ -89,10 +105,7 @@ def candidate_detail(session, version, profile_id):
     inspection = inspect_bundle(metadata, version.bundle_sha256)
     adapters = session.scalars(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == version.id).order_by(CandidateAdapter.id)).all()
     adapter, review_status = reviewed_adapter(adapters, version.bundle_sha256)
-    executable = bool(adapter and verified and inspection["integrity_status"] == "verified"
-        and asset.kind == "skill" and inspection["manifest_present"] and repository.get("archived") is not True
-        and not repository_fixture(asset, version))
-    approved = adapter if executable else None
+    approved = executable_adapter(asset, version, metadata, adapter, verified, inspection)
     compatible, reasons = compatibility(session, profile_id, approved)
     permissions = inspection["permissions"]
     policy = approved.permissions if approved and isinstance(approved.permissions, dict) else {}
@@ -149,7 +162,7 @@ def candidate_detail(session, version, profile_id):
         is_current=current == version.id if current else None, demo=demo)
 
 
-def candidate_router(sessions, auth):
+def candidate_router(sessions, auth, operator):
     """A 담당 후보 상세 조회를 인증과 응답 모델에 연결한다."""
     router = APIRouter(prefix="/api/candidates", tags=["candidates"],
         responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}})
@@ -162,5 +175,68 @@ def candidate_router(sessions, auth):
             if version is None:
                 raise HTTPException(404, detail={"code": "candidate_not_found", "message": "후보를 찾을 수 없습니다."})
             return candidate_detail(session, version, profile_id)
+
+    def approve_candidate(version_id, body, support_level):
+        """??? ?? ??? ???? ??? ??? ???? ?? ??? ????."""
+        if not body.confirmed:
+            raise HTTPException(422, detail={"code": "approval_not_confirmed", "message": "후보 파일 검토를 확인해 주세요."})
+        with sessions.begin() as session:
+            version = session.get(AssetVersion, version_id, with_for_update=True)
+            if version is None:
+                raise HTTPException(404, detail={"code": "candidate_not_found", "message": "후보를 찾을 수 없습니다."})
+            if version.bundle_sha256 != body.expected_bundle_sha256:
+                raise HTTPException(409, detail={"code": "candidate_version_changed", "message": "검토한 후보 해시와 현재 버전이 다릅니다."})
+            asset = session.get(Asset, version.asset_id)
+            source = session.get(Source, asset.source_id)
+            metadata = version.metadata_json if isinstance(version.metadata_json, dict) else {}
+            repository = metadata.get("repository") if isinstance(metadata.get("repository"), dict) else {}
+            tags = version.tags if isinstance(version.tags, dict) else {}
+            inspection = inspect_bundle(metadata, version.bundle_sha256)
+            if (asset.kind != "skill" or repository_fixture(asset, version)
+                or "code_review" not in (tags.get("task_types") or [])
+                or not verified_source(metadata, version.revision, source.kind,
+                    public_url(metadata.get("source_url")), source.url)
+                or inspection["integrity_status"] != "verified" or not inspection["manifest_present"]
+                or inspection["executable_files"] or repository.get("archived") is True
+                or any(item["kind"] in {"command_exec", "network", "file_write"}
+                    for item in inspection["permissions"]["declared"])):
+                raise HTTPException(409, detail={"code": "candidate_bundle_unsafe", "message": "출처와 스킬 파일을 다시 검토해 주세요."})
+            name = asset.canonical_key.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+                raise HTTPException(409, detail={"code": "invalid_skill_name", "message": "스킬 이름을 확인해 주세요."})
+            adapters = session.scalars(select(CandidateAdapter).where(
+                CandidateAdapter.asset_version_id == version_id).with_for_update()).all()
+            if len(adapters) > 1:
+                raise HTTPException(409, detail={"code": "adapter_conflict", "message": "기존 승인 기록을 확인해 주세요."})
+            existing = adapters[0] if adapters else None
+            if existing:
+                if (not existing.reviewed or existing.approved_bundle_sha256 != version.bundle_sha256
+                    or existing.runner != "codex_cli" or "code_review" not in existing.supported_tasks
+                    or existing.support_level not in {"comparable", "applicable"}
+                    or not isinstance(existing.runtime, dict) or existing.runtime.get("skill_name", name) != name):
+                    raise HTTPException(409, detail={"code": "adapter_conflict", "message": "기존 승인 기록을 확인해 주세요."})
+                adapter = existing
+                if adapter.support_level != "applicable" or support_level == "applicable":
+                    adapter.support_level = support_level
+            else:
+                adapter = CandidateAdapter(id="adapter_" + uuid4().hex, asset_version_id=version_id,
+                    runner="codex_cli", supported_tasks=["code_review"],
+                    approved_bundle_sha256=version.bundle_sha256, support_level=support_level,
+                    reviewed=True, permissions={"file_read": True}, runtime={})
+                session.add(adapter)
+                session.flush()
+            return {"adapter_id": adapter.id, "candidate_version_id": version_id,
+                "approved_bundle_sha256": version.bundle_sha256, "support_level": adapter.support_level}
+
+    @router.post("/{version_id}/approve-comparison", status_code=201,
+                 summary="검토한 고정 스킬 버전을 Codex 코드 리뷰 비교에 승인")
+    def approve_comparison(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
+        """???? ??? ??? ?? ?? ??? ????."""
+        return approve_candidate(version_id, body, "comparable")
+
+    @router.post("/{version_id}/approve-applicable", summary="검토한 고정 스킬 버전을 PC 적용에 승인")
+    def approve_applicable(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
+        """???? ??? ??? PC ??? ????."""
+        return approve_candidate(version_id, body, "applicable")
 
     return router

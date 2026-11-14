@@ -56,6 +56,58 @@ def add_adapter(sessions, *, reviewed=True, digest=None, name="adapter-real", le
             permissions={"file_read": True, "private_path": "C:/TOP_SECRET", "network": ["https://TOP_SECRET"]}, runtime={}))
 
 
+def test_operator_can_approve_exact_safe_skill_for_comparison(candidate):
+    client, sessions = candidate
+    original = client.get("/api/candidates/ver-real", headers=HEADERS).json()["bundle_sha256"]
+    url = "/api/candidates/ver-real/approve-comparison"
+    assert client.post(url, json={"expected_bundle_sha256": original, "confirmed": True}).status_code == 401
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": "0" * 64,
+        "confirmed": True}).status_code == 409
+    unsafe = client.post(url, headers=HEADERS, json={"expected_bundle_sha256": original,
+        "confirmed": True})
+    assert unsafe.status_code == 409 and unsafe.json()["error"]["code"] == "candidate_bundle_unsafe"
+
+    bundle = {"files": {"SKILL.md": base64.b64encode(
+        b"---\nname: code-review\n---\nReview app.py for security and correctness.\n").decode()}}
+    digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, ensure_ascii=True,
+        separators=(",", ":")).encode()).hexdigest()
+    with sessions.begin() as session:
+        version = session.get(AssetVersion, "ver-real")
+        version.bundle_sha256 = digest
+        version.metadata_json = {**version.metadata_json, "bundle": bundle}
+
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": False}).status_code == 422
+    approved = client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": True})
+    assert approved.status_code == 201, approved.text
+    value = approved.json()
+    assert value["candidate_version_id"] == "ver-real"
+    assert value["support_level"] == "comparable" and value["approved_bundle_sha256"] == digest
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": True}).json() == value
+    assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["support_level"] == "comparable"
+    applicable = client.post("/api/candidates/ver-real/approve-applicable", headers=HEADERS,
+        json={"expected_bundle_sha256": digest, "confirmed": True})
+    assert applicable.status_code == 200 and applicable.json()["support_level"] == "applicable"
+    assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["support_level"] == "applicable"
+    # ?? ??? ????? ?? ??? ?? ??? ??? ???.
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": True}).json()["support_level"] == "applicable"
+    with sessions() as session:
+        adapter = session.scalar(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == "ver-real"))
+        assert adapter.reviewed and adapter.supported_tasks == ["code_review"]
+        assert adapter.runtime == {}
+    with sessions.begin() as session:
+        session.add(AgentDevice(id="agent-ready", profile_id="local", token_hash="ready-hash",
+            device_name="test", agent_version="test", is_primary=True, codex_ready=True,
+            codex_version="codex-cli test", last_seen_at=utc_now()))
+        session.add(Environment(id="env-ready", profile_id="local", device_id="agent-ready",
+            runner="codex_cli", runner_version="codex-cli test", model_id="fixed-model",
+            installed_skills=[], settings_hash="x", scan_root="agent://agent-ready/scan"))
+    assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["compatibility"] == "confirmed"
+
+
 def test_candidate_contract_auth_unknowns_and_no_private_payload(candidate):
     """출처와 권한 계약을 제공하되 공식성 및 개선 효과를 추측하거나 원문을 노출하지 않는다."""
     client, _ = candidate
@@ -102,6 +154,8 @@ def test_reviewed_adapter_does_not_imply_ready_or_audited_environment(candidate)
     assert item["support_level"] == "comparable" and item["adapter_id"] == "adapter-real"
     assert item["compatibility"] == "unknown" and item["security_audit_status"] == "unverified"
     assert item["permissions"]["allowed"] == {"file_read": True}
+    listed = client.get("/api/catalog/candidates").json()["items"]
+    assert next(value for value in listed if value["candidate_version_id"] == "ver-real")["support_level"] == "comparable"
     with sessions.begin() as session:
         session.add(AgentDevice(id="device-real", profile_id="local", token_hash="fixture-hash", device_name="fixture",
             agent_version="test", is_primary=True, codex_version="test-version", codex_ready=True, last_seen_at=utc_now()))
@@ -131,6 +185,8 @@ def test_tampering_and_demo_never_enable_execution(candidate):
     item = client.get("/api/candidates/ver-real", headers=HEADERS).json()
     assert item["integrity_status"] == "mismatch" and item["support_level"] == "information_only"
     assert item["permissions"]["declared"] == []
+    listed = client.get("/api/catalog/candidates").json()["items"]
+    assert next(row for row in listed if row["candidate_version_id"] == "ver-real")["support_level"] == "information_only"
     assert client.get("/api/recommendations", headers=HEADERS).json()["items"][0]["support_level"] == "information_only"
     with sessions.begin() as session:
         seed(session)
@@ -140,6 +196,8 @@ def test_tampering_and_demo_never_enable_execution(candidate):
     demo = client.get("/api/candidates/demo_ver_01", headers=HEADERS).json()
     assert demo["source_verification"] == "demo" and demo["verified_source_at"] is None
     assert demo["support_level"] == "information_only" and "demo_candidate" in demo["risk_signal_codes"]
+    listed = client.get("/api/catalog/candidates").json()["items"]
+    assert next(row for row in listed if row["candidate_version_id"] == "demo_ver_01")["support_level"] == "information_only"
 
 
 def test_repository_test_data_is_excluded_even_with_reviewed_adapter(candidate):
@@ -239,3 +297,24 @@ def test_unsafe_source_url_is_not_returned_or_marked_verified(candidate):
     assert response.status_code == 200 and "TOP_SECRET" not in response.text
     assert response.json()["source_verification"] == "unverified"
     assert response.json()["support_level"] == "information_only"
+
+
+@pytest.mark.parametrize("endpoint", ["approve-comparison", "approve-applicable"])
+def test_operator_cannot_approve_repository_fixture(candidate, endpoint):
+    """??? ???? ??? ?? ??? ??? ??? ?? ???? ????."""
+    client, sessions = candidate
+    bundle = {"files": {"SKILL.md": base64.b64encode(
+        b"---\nname: review\n---\nReview code with input validation.\n").decode()}}
+    digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, ensure_ascii=True,
+        separators=(",", ":")).encode()).hexdigest()
+    with sessions.begin() as session:
+        version = session.get(AssetVersion, "ver-real")
+        version.bundle_sha256 = digest
+        version.metadata_json = {**version.metadata_json, "bundle": bundle}
+        session.get(Asset, "asset-real").canonical_key = "github:example/review:tests/fixtures/review"
+    result = client.post(f"/api/candidates/ver-real/{endpoint}", headers=HEADERS,
+        json={"expected_bundle_sha256": digest, "confirmed": True})
+    assert result.status_code == 409
+    assert result.json()["error"]["code"] == "candidate_bundle_unsafe"
+    with sessions() as session:
+        assert session.scalar(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == "ver-real")) is None

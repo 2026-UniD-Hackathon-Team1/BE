@@ -268,6 +268,20 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
         background.add_task(run_job, *job)
         return {"comparison_id": comparison_id, "status": "queued"}
 
+    @router.get("/api/comparisons", summary="진행 중인 비교 목록 (홈의 '진행 중인 비교')")
+    def active_list(active: bool = Query(True), profile_id: str = Depends(auth)):
+        """대기·실행 중인 비교만 최신순으로 돌려준다. 끝난 비교는 이력에서 본다."""
+        if not active:
+            raise HTTPException(422, detail={"code": "active_only", "message": "진행 중인 비교만 조회할 수 있습니다."})
+        with sessions() as session:
+            rows = session.execute(select(Comparison, Asset.display_name)
+                .join(AssetVersion, AssetVersion.id == Comparison.candidate_version_id)
+                .join(Asset, Asset.id == AssetVersion.asset_id)
+                .where(Comparison.profile_id == profile_id, Comparison.status.in_(["queued", "running", "evaluating"]))
+                .order_by(Comparison.created_at.desc()).limit(20)).all()
+            return [{"comparison_id": c.id, "change_title": name, "candidate_label": name,
+                     "status": c.status, "created_at": c.created_at} for c, name in rows]
+
     @router.get("/api/comparisons/{comparison_id}", response_model=ComparisonDetail)
     def detail(comparison_id: str, profile_id: str = Depends(auth)):
         with sessions.begin() as session:
@@ -298,7 +312,8 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
                     "failure_code": run.failure_code,
                     "inputs": input_results(run)}
                     for run in runs], "findings": [], "llm_judgment": None,
-                "limits": ["각 방식 1회 실행", "자동 우열 판정 없음"], "is_prerecorded": False}
+                "limits": ["각 방식 1회 실행", "자동 우열 판정 없음"], "is_prerecorded": False,
+                "created_at": comparison.created_at, "completed_at": comparison.completed_at}
 
     @router.get("/api/history")
     def history(profile_id: str = Depends(auth)):
