@@ -366,3 +366,23 @@ class EventLog(Base):
     subject_id: Mapped[str] = mapped_column(String)
     payload: Mapped[dict] = mapped_column("payload_json", JSON)
     created_at: Mapped[str] = mapped_column(String, default=utc_now)
+
+
+class UserAccount(Base):
+    """회원가입한 계정. id는 프로필 id로도 쓴다. 비밀번호는 원문 대신 scrypt 해시만 저장한다."""
+    __tablename__ = "user_account"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    username: Mapped[str] = mapped_column(String, unique=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
+
+
+class UserSession(Base):
+    """웹 로그인 세션. 원문 토큰은 저장하지 않고 해시만 저장한다."""
+    __tablename__ = "user_session"
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user_account.id"), index=True)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
+    expires_at: Mapped[str] = mapped_column(String)
+    revoked_at: Mapped[str | None] = mapped_column(String)
+

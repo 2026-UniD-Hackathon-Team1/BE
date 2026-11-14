@@ -136,7 +136,7 @@ def test_web_auth_scope_validation_and_openapi(client, database):
     assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + token},
                        json={"codex_ready": True}).status_code == 422
     schema = client.get("/openapi.json").json()
-    assert schema["paths"]["/api/agent"]["get"]["security"] == [{"APIKeyHeader": []}]
+    assert schema["paths"]["/api/agent"]["get"]["security"] == [{"LoginSession": []}, {"APIKeyHeader": []}]
     assert schema["paths"]["/api/agent/heartbeat"]["post"]["security"] == [{"AgentToken": []}]
     preflight = client.options("/api/agent", headers={"Origin": "http://localhost:5173",
         "Access-Control-Request-Method": "DELETE", "Access-Control-Request-Headers": "X-Local-Token"})
