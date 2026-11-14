@@ -1,5 +1,7 @@
 """Local comparison requests and result viewing."""
 import os
+import hashlib
+import json
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -14,6 +16,11 @@ from backend.input_store import register_input, load_input
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "experiments" / "skill_eval" / "fixture"
+
+
+def input_fingerprint(manifests: list[dict]) -> str:
+    pairs = [(item["input_id"], item["input_sha256"]) for item in manifests]
+    return hashlib.sha256(json.dumps(pairs, separators=(",", ":")).encode()).hexdigest()
 
 
 class ComparisonInput(BaseModel):
@@ -60,40 +67,73 @@ def comparison_router(sessions, auth):
         return [{"suggestion_id": manifest["input_id"], "kind": "fixture", "label": "코드 리뷰 예제",
                  "meta": "파일 1개", "relative_paths": ["app.py"], "excluded_paths": []}]
 
-    def run_job(comparison_id: str, input_id: str, method_prompt: str, bundle: str, digest: str,
+    def run_job(comparison_id: str, method_prompt: str, bundle: str, digest: str,
                 model: str, runner_version: str):
         with sessions.begin() as session:
             comparison = session.get(Comparison, comparison_id)
             if comparison.status != "queued":
                 return
+            manifests = comparison.input_manifest
             expected_input_sha256 = comparison.input_sha256
             comparison.status = "running"
+            for run in session.scalars(select(Run).where(Run.comparison_id == comparison_id)):
+                run.status = "running"
         try:
-            manifest = load_input(input_id, ROOT / "runtime" / "inputs")
-            if manifest["input_sha256"] != expected_input_sha256:
+            if input_fingerprint(manifests) != expected_input_sha256:
                 raise ValueError("comparison input changed")
-            result = execute_comparison(root=ROOT / "runtime" / "inputs" / input_id / "files",
-                selected_paths=[Path(path) for path in manifest["relative_paths"]],
-                candidate_bundle=Path(bundle), approved_bundle_sha256=digest,
-                model_id=model, runner_version=runner_version, method_prompt=method_prompt,
-                output_root=ROOT / "runtime" / "comparisons" / comparison_id,
-                codex_command=[os.environ.get("CODEX_BIN", "codex")],
-                expected_input_sha256=expected_input_sha256)
+            for manifest in manifests:
+                input_id = manifest["input_id"]
+                current = load_input(input_id, ROOT / "runtime" / "inputs")
+                if current != manifest:
+                    raise ValueError("comparison input changed")
+                result = execute_comparison(root=ROOT / "runtime" / "inputs" / input_id / "files",
+                    selected_paths=[Path(path) for path in manifest["relative_paths"]],
+                    candidate_bundle=Path(bundle), approved_bundle_sha256=digest,
+                    model_id=model, runner_version=runner_version, method_prompt=method_prompt,
+                    output_root=ROOT / "runtime" / "comparisons" / comparison_id / input_id,
+                    codex_command=[os.environ.get("CODEX_BIN", "codex")],
+                    expected_input_sha256=manifest["input_sha256"])
+                with sessions.begin() as session:
+                    rows = {row.arm: row for row in session.scalars(select(Run).where(Run.comparison_id == comparison_id))}
+                    for name, arm in (("baseline", result.baseline), ("candidate", result.candidate)):
+                        row = rows[name]
+                        entry = {"input_id": input_id, "status": arm.status, "result": arm.final_result,
+                            "output_text": (arm.final_result or {}).get("summary"), "seconds": arm.seconds,
+                            "metrics": {}, "skill_usage_status": arm.skill_usage_status,
+                            "failure_code": None if arm.status == "completed" else arm.status,
+                            "event_log_path": str(arm.output_path)}
+                        row.result_json = {"inputs": [*row.result_json["inputs"], entry]}
+                        row.metrics_json = {"inputs": [*row.metrics_json["inputs"],
+                            {"input_id": input_id, "seconds": arm.seconds}]}
+                        row.event_log_path = str(ROOT / "runtime" / "comparisons" / comparison_id)
             with sessions.begin() as session:
                 comparison = session.get(Comparison, comparison_id)
-                for name, arm in (("baseline", result.baseline), ("candidate", result.candidate)):
-                    session.add(Run(id="run_" + uuid4().hex, comparison_id=comparison_id, arm=name,
-                        status=arm.status, skill_usage_status=arm.skill_usage_status,
-                        result_json=arm.final_result, event_log_path=str(arm.output_path),
-                        metrics_json={"seconds": arm.seconds}, failure_code=None if arm.status == "completed" else arm.status,
-                        ended_at=utc_now()))
-                comparison.status = "done" if result.baseline.status == result.candidate.status == "completed" and result.candidate.skill_usage_status == "confirmed" else "failed"
+                rows = list(session.scalars(select(Run).where(Run.comparison_id == comparison_id)))
+                for row in rows:
+                    arm_valid = len(row.result_json["inputs"]) == len(manifests) and all(
+                        item["status"] == "completed" and (
+                            row.arm == "baseline" or item["skill_usage_status"] == "confirmed")
+                        for item in row.result_json["inputs"])
+                    row.status = "completed" if arm_valid else "failed"
+                    row.skill_usage_status = "confirmed" if row.arm == "candidate" and arm_valid else (
+                        "not_expected" if row.arm == "baseline" else "unconfirmed")
+                    row.metrics_json = {**row.metrics_json, "seconds": sum(
+                        item["seconds"] for item in row.metrics_json["inputs"])}
+                    row.failure_code = None if arm_valid else "input_run_failed"
+                    row.ended_at = utc_now()
+                comparison.status = "done" if all(row.status == "completed" for row in rows) else "failed"
                 comparison.completed_at = utc_now()
         except Exception:
             with sessions.begin() as session:
                 comparison = session.get(Comparison, comparison_id)
                 comparison.status = "failed"
                 comparison.completed_at = utc_now()
+                for row in session.scalars(select(Run).where(Run.comparison_id == comparison_id)):
+                    row.status = "failed"
+                    row.failure_code = "input_run_failed"
+                    row.metrics_json = {**row.metrics_json, "seconds": sum(
+                        item["seconds"] for item in row.metrics_json["inputs"])}
+                    row.ended_at = utc_now()
 
     @router.post("/api/comparisons", status_code=202)
     def create(body: ComparisonInput, background: BackgroundTasks, profile_id: str = Depends(auth)):
@@ -107,17 +147,17 @@ def comparison_router(sessions, auth):
                 raise HTTPException(404, detail={"code": "work_method_not_found", "message": "작업 방식을 찾을 수 없습니다."})
             version = session.get(AssetVersion, body.candidate_version_id)
             adapter = session.scalar(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == body.candidate_version_id))
-            if version is None or adapter is None or adapter.support_level not in ("comparable", "applicable") or not adapter.reviewed:
+            if version is None or adapter is None or adapter.support_level not in ("comparable", "applicable") or not adapter.reviewed or body.task_type not in adapter.supported_tasks:
                 raise HTTPException(409, detail={"code": "candidate_not_comparable", "message": "이 후보는 비교할 수 없습니다."})
             if version.bundle_sha256 != adapter.approved_bundle_sha256:
                 raise HTTPException(409, detail={"code": "candidate_version_changed", "message": "승인된 후보 버전과 현재 버전이 다릅니다."})
-            if len(body.input_ids) != 1 or body.task_type != method.task_type or not body.confirmed_upload_scope:
+            if len(set(body.input_ids)) != len(body.input_ids) or body.task_type != "code_review" or body.task_type != method.task_type or not body.confirmed_upload_scope:
                 raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "비교 입력을 확인해 주세요."})
             try:
-                manifest = load_input(body.input_ids[0], ROOT / "runtime" / "inputs")
+                manifests = [load_input(input_id, ROOT / "runtime" / "inputs") for input_id in body.input_ids]
             except (ValueError, OSError):
                 raise HTTPException(422, detail={"code": "invalid_input_id", "message": "등록된 비교 입력을 다시 선택해 주세요."}) from None
-            if manifest.get("task_type") != body.task_type:
+            if any(manifest.get("task_type") != body.task_type for manifest in manifests):
                 raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "입력의 작업 유형이 비교 유형과 다릅니다."})
             environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
             if environment is None or not version.artifact_path:
@@ -125,11 +165,15 @@ def comparison_router(sessions, auth):
             comparison_id = "cmp_" + uuid4().hex
             session.add(Comparison(id=comparison_id, profile_id=profile_id, method_id=method.id,
                 method_version=method.version, candidate_version_id=version.id,
-                input_manifest=[manifest],
-                input_sha256=manifest["input_sha256"], plan={"idempotency_key": body.idempotency_key,
+                input_manifest=manifests,
+                input_sha256=input_fingerprint(manifests), plan={"idempotency_key": body.idempotency_key,
                 "model_id": environment.model_id, "runner_version": environment.runner_version,
                 "timeout_seconds": 180}, status="queued"))
-            job = (comparison_id, manifest["input_id"], method.prompt_text, version.artifact_path,
+            for arm in ("baseline", "candidate"):
+                session.add(Run(id="run_" + uuid4().hex, comparison_id=comparison_id, arm=arm,
+                    status="queued", result_json={"inputs": []}, metrics_json={"inputs": []},
+                    skill_usage_status="not_expected" if arm == "baseline" else "unconfirmed"))
+            job = (comparison_id, method.prompt_text, version.artifact_path,
                    adapter.approved_bundle_sha256, environment.model_id, environment.runner_version)
         background.add_task(run_job, *job)
         return {"comparison_id": comparison_id, "status": "queued"}
@@ -143,6 +187,14 @@ def comparison_router(sessions, auth):
             runs = list(session.scalars(select(Run).where(Run.comparison_id == comparison_id)))
             version = session.get(AssetVersion, comparison.candidate_version_id)
             asset = session.get(Asset, version.asset_id)
+            def input_results(run):
+                recorded = {item["input_id"]: item for item in (run.result_json or {}).get("inputs", [])}
+                return [recorded.get(manifest["input_id"], {
+                    "input_id": manifest["input_id"], "status": "failed" if comparison.status == "failed" else "queued",
+                    "result": None, "output_text": None, "seconds": None, "metrics": {},
+                    "skill_usage_status": "unconfirmed" if run.arm == "candidate" else "not_expected",
+                    "failure_code": run.failure_code if comparison.status == "failed" else None,
+                }) for manifest in comparison.input_manifest]
             return {"comparison_id": comparison.id, "status": comparison.status,
                 "verdict": comparison.user_decision, "verdict_reason": comparison.decision_reason,
                 "baseline_label": "기존 방식", "candidate_label": asset.display_name,
@@ -150,11 +202,10 @@ def comparison_router(sessions, auth):
                 "method_id": comparison.method_id, "method_version": comparison.method_version,
                 "candidate_version_id": comparison.candidate_version_id, "inputs": comparison.input_manifest,
                 "plan": comparison.plan, "runs": [{"arm": run.arm, "status": run.status,
-                    "output_text": (run.result_json or {}).get("summary"), "result": run.result_json,
+                    "output_text": None, "result": run.result_json,
                     "seconds": run.metrics_json.get("seconds"), "skill_usage_status": run.skill_usage_status,
-                    "inputs": [{"input_id": item.get("input_id"), "status": run.status,
-                        "metrics": {}, "output_text": (run.result_json or {}).get("summary"),
-                        "seconds": run.metrics_json.get("seconds")} for item in comparison.input_manifest]}
+                    "failure_code": run.failure_code,
+                    "inputs": input_results(run)}
                     for run in runs], "findings": [], "llm_judgment": None,
                 "limits": ["각 방식 1회 실행", "자동 우열 판정 없음"], "is_prerecorded": False}
 
