@@ -13,6 +13,7 @@ from sqlalchemy import select
 from backend.models import Asset, AssetVersion, CandidateAdapter, Comparison, Environment, EventLog, Run, WorkMethod, utc_now
 from backend.runtime.comparison import execute_comparison
 from backend.input_store import register_input, load_input
+from backend.comparison_contract import ComparisonDetail
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "experiments" / "skill_eval" / "fixture"
@@ -178,7 +179,7 @@ def comparison_router(sessions, auth):
         background.add_task(run_job, *job)
         return {"comparison_id": comparison_id, "status": "queued"}
 
-    @router.get("/api/comparisons/{comparison_id}")
+    @router.get("/api/comparisons/{comparison_id}", response_model=ComparisonDetail)
     def detail(comparison_id: str, profile_id: str = Depends(auth)):
         with sessions() as session:
             comparison = session.get(Comparison, comparison_id)
