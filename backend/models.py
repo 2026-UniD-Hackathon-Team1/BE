@@ -140,6 +140,16 @@ class Recommendation(Base):
     )
 
 
+class RecommendationDecision(Base):
+    __tablename__ = "recommendation_decision"
+    recommendation_id: Mapped[str] = mapped_column(ForeignKey("recommendation.id"), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profile.id"))
+    status: Mapped[str] = mapped_column(String)
+    reason: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(String, default=utc_now)
+    __table_args__ = (CheckConstraint("status IN ('new', 'snoozed', 'dismissed', 'kept')"),)
+
+
 class Comparison(Base):
     __tablename__ = "comparison"
     id: Mapped[str] = mapped_column(String, primary_key=True)

@@ -13,7 +13,7 @@ def test_docs_and_catalog_contract(database):
         assert client.get("/docs").status_code == 200
         schema = client.get("/openapi.json").json()
         assert "/api/catalog/candidates" in schema["paths"]
-        assert "/api/recommendations" not in schema["paths"]
+        assert "/api/recommendations" in schema["paths"]
         assert client.get("/api/health").json() == {"status": "ok", "database": "ready"}
         response = client.get("/api/catalog/candidates?limit=3")
         assert response.status_code == 200

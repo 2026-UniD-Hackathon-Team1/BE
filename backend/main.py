@@ -14,6 +14,7 @@ from backend.settings import database_url as configured_database_url
 from backend.auth import local_auth
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
+from backend.recommendations import recommendation_router
 from backend.work_methods import work_method_router
 from backend.comparisons import comparison_router
 from backend.schemas import CandidateList, CandidateSummary, ErrorResponse, HealthResponse, SourceList, SourceSummary
@@ -57,11 +58,12 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
             engine.dispose()
 
     app = FastAPI(title="갈아탈까 API", version="0.1.0", lifespan=lifespan,
-        description="공통 카탈로그와 로컬 프로필 및 작업 방식 API입니다. 개인 API는 Authorize에 X-Local-Token을 입력하세요.",
+        description="공통 카탈로그와 로컬 프로필, 작업 방식 및 추천 API입니다. 개인 API는 Authorize에 X-Local-Token을 입력하세요.",
         openapi_tags=[{"name": "system", "description": "상태 확인"},
                       {"name": "catalog", "description": "발견한 후보와 수집 상태. 성능 검증 결과가 아닙니다."},
                       {"name": "profile", "description": "내 작업 환경 등록과 온보딩 상태 조회. 로컬 단일 사용자용입니다."},
-                      {"name": "work-methods", "description": "기존 작업 방식의 불변 버전 등록과 조회"}],
+                      {"name": "work-methods", "description": "기존 작업 방식의 불변 버전 등록과 조회"},
+                      {"name": "recommendations", "description": "작업 관련성 추천과 카드 상태 변경. 점수는 성능 점수가 아닙니다."}],
         responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "PUT", "POST", "PATCH"],
@@ -69,6 +71,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
     app.include_router(comparison_router(sessions, auth))
+    app.include_router(recommendation_router(sessions, auth))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):

@@ -97,3 +97,40 @@ class WorkMethodResponse(WorkMethodInput):
     version: int
     is_active: bool
     created_at: str
+
+
+class RecommendationAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["new", "snoozed", "dismissed", "kept"]
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LatestComparison(BaseModel):
+    comparison_id: str
+    status: str
+    verdict: str | None = None
+
+
+class RecommendationCard(BaseModel):
+    recommendation_id: str
+    candidate_version_id: str
+    adapter_id: str | None
+    work_method_id: str | None
+    work_method_version: int | None
+    title: str
+    change_type: str
+    task_types: list[str]
+    score: int
+    related_reasons: list[str]
+    source_url: str
+    compatibility: Literal["unknown", "confirmed"]
+    support_level: Literal["information_only", "comparable", "applicable"]
+    performance_status: Literal["not_compared"] = "not_compared"
+    status: Literal["new", "snoozed", "dismissed", "kept"]
+    reason: str | None
+    latest_comparison: LatestComparison | None
+    demo: bool
+
+
+class RecommendationList(BaseModel):
+    items: list[RecommendationCard]
