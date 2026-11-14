@@ -13,6 +13,7 @@ from backend.db import make_engine, session_factory
 from backend.settings import database_url as configured_database_url
 from backend.auth import local_auth
 from backend.agent import agent_router
+from backend.agent_jobs import job_router
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.recommendations import recommendation_router
@@ -75,6 +76,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(comparison_router(sessions, auth))
     app.include_router(recommendation_router(sessions, auth))
     app.include_router(agent_router(sessions, auth))
+    app.include_router(job_router(sessions, auth))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):

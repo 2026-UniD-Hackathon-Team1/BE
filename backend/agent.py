@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import case, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.models import AgentDevice, AgentPairingCode, AgentRateLimit, Profile
+from backend.models import AgentDevice, AgentJob, AgentPairingCode, AgentRateLimit, Profile
 from backend.schemas import ErrorResponse
 
 bearer = HTTPBearer(auto_error=False, scheme_name="AgentToken")
@@ -71,6 +71,27 @@ class AgentStatus(BaseModel):
     last_seen_at: str | None = None
 
 
+def authenticated_device(session, credentials):
+    """기기 행을 잠그고 해제된 토큰의 작업 접근과 상태 갱신을 거부한다."""
+    if credentials is not None:
+        device = session.scalar(select(AgentDevice).where(
+            AgentDevice.token_hash == secret_hash(credentials.credentials), AgentDevice.revoked_at.is_(None))
+            .with_for_update())
+        if device is not None:
+            return device
+    raise HTTPException(401, detail={"code": "INVALID_AGENT_TOKEN", "message": "연결 프로그램을 다시 연결해 주세요."})
+
+
+def revoke_devices(session, profile_id, now):
+    """기기 토큰과 미완료 작업을 같은 트랜잭션에서 무효화한다."""
+    ids = list(session.scalars(select(AgentDevice.id).where(AgentDevice.profile_id == profile_id,
+        AgentDevice.revoked_at.is_(None)).with_for_update()))
+    session.execute(update(AgentJob).where(AgentJob.device_id.in_(ids),
+        AgentJob.status.in_(["queued", "running"])).values(status="cancelled", lease_expires_at=None,
+        updated_at=now, finished_at=now, message="연결이 해제되어 작업이 취소됐습니다."))
+    session.execute(update(AgentDevice).where(AgentDevice.id.in_(ids)).values(revoked_at=now, codex_ready=False))
+
+
 def agent_router(sessions, web_auth):
     """웹 연결 관리와 agent Bearer 인증 경로를 구성한다."""
     router = APIRouter(prefix="/api/agent", tags=["agent"],
@@ -124,8 +145,7 @@ def agent_router(sessions, web_auth):
                 AgentPairingCode.consumed_at.is_(None), AgentPairingCode.expires_at > now).values(consumed_at=now))
             if consumed.rowcount != 1:
                 raise HTTPException(400, detail={"code": "INVALID_PAIRING_CODE", "message": "연결 코드가 잘못됐거나 만료됐습니다. 새 코드를 발급해 주세요."})
-            session.execute(update(AgentDevice).where(AgentDevice.profile_id == profile_id,
-                AgentDevice.revoked_at.is_(None)).values(revoked_at=now, codex_ready=False))
+            revoke_devices(session, profile_id, now)
             session.add(AgentDevice(id="agent_" + uuid4().hex, profile_id=profile_id,
                 token_hash=secret_hash(token), device_name=body.device_name, agent_version=body.agent_version,
                 codex_ready=False, last_seen_at=now))
@@ -151,16 +171,13 @@ def agent_router(sessions, web_auth):
     def heartbeat(body: HeartbeatInput,
                   credentials: HTTPAuthorizationCredentials | None = Security(bearer)):
         """유효한 기기 토큰으로만 heartbeat를 갱신하며 해제된 기기는 거부한다."""
-        if credentials is None:
-            raise HTTPException(401, detail={"code": "INVALID_AGENT_TOKEN", "message": "연결 프로그램을 다시 연결해 주세요."})
         if body.codex_ready and body.codex_version is None:
             raise HTTPException(422, detail={"code": "validation_error", "message": "Codex 준비 상태와 버전을 함께 보내 주세요."})
         with sessions.begin() as session:
-            result = session.execute(update(AgentDevice).where(
-                AgentDevice.token_hash == secret_hash(credentials.credentials), AgentDevice.revoked_at.is_(None))
-                .values(last_seen_at=iso_time(current_time()), codex_version=body.codex_version, codex_ready=body.codex_ready))
-            if result.rowcount != 1:
-                raise HTTPException(401, detail={"code": "INVALID_AGENT_TOKEN", "message": "연결 프로그램을 다시 연결해 주세요."})
+            device = authenticated_device(session, credentials)
+            device.last_seen_at = iso_time(current_time())
+            device.codex_version = body.codex_version
+            device.codex_ready = body.codex_ready
         return Response(status_code=204)
 
     @router.delete("", status_code=204, summary="기기 연결 해제")
@@ -169,8 +186,7 @@ def agent_router(sessions, web_auth):
         now = iso_time(current_time())
         with sessions.begin() as session:
             session.scalar(select(Profile).where(Profile.id == profile_id).with_for_update())
-            session.execute(update(AgentDevice).where(AgentDevice.profile_id == profile_id,
-                AgentDevice.revoked_at.is_(None)).values(revoked_at=now, codex_ready=False))
+            revoke_devices(session, profile_id, now)
             session.execute(update(AgentPairingCode).where(AgentPairingCode.profile_id == profile_id,
                 AgentPairingCode.consumed_at.is_(None)).values(consumed_at=now))
         return Response(status_code=204)

@@ -45,8 +45,42 @@ class AgentDevice(Base):
     codex_ready: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[str] = mapped_column(String)
     revoked_at: Mapped[str | None] = mapped_column(String)
-    __table_args__ = (Index("uq_active_agent_profile", "profile_id", unique=True,
+    __table_args__ = (UniqueConstraint("id", "profile_id", name="uq_agent_device_owner"),
+        Index("uq_active_agent_profile", "profile_id", unique=True,
         postgresql_where=text("revoked_at IS NULL")),)
+
+
+class AgentJob(Base):
+    __tablename__ = "agent_job"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String)
+    device_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    request_key: Mapped[str] = mapped_column(String)
+    request_hash: Mapped[str] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    claim_token_hash: Mapped[str | None] = mapped_column(String)
+    lease_expires_at: Mapped[str | None] = mapped_column(String)
+    progress_step: Mapped[str | None] = mapped_column(String)
+    progress_detail: Mapped[str | None] = mapped_column(Text)
+    result_json: Mapped[dict | None] = mapped_column(JSON)
+    result_hash: Mapped[str | None] = mapped_column(String)
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String, default=utc_now)
+    started_at: Mapped[str | None] = mapped_column(String)
+    finished_at: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        ForeignKeyConstraint(["device_id", "profile_id"], ["agent_device.id", "agent_device.profile_id"]),
+        UniqueConstraint("profile_id", "request_key", name="uq_agent_job_request"),
+        CheckConstraint("kind IN ('scan', 'suggest_inputs', 'snapshot_inputs', 'run_comparison', 'apply', 'rollback')", name="ck_agent_job_kind"),
+        CheckConstraint("status IN ('queued', 'running', 'done', 'failed', 'cancelled')", name="ck_agent_job_status"),
+        CheckConstraint("attempts >= 0", name="ck_agent_job_attempts"),
+        Index("ix_agent_job_device_status", "device_id", "status", "created_at"),
+        Index("uq_running_job_device", "device_id", unique=True, postgresql_where=text("status = 'running'")),
+    )
 
 
 class AgentRateLimit(Base):
