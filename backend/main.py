@@ -17,6 +17,7 @@ from backend.agent_jobs import job_router
 from backend.environment import environment_router
 from backend.candidates import candidate_router
 from backend.catalog.jobs import catalog_router
+from backend.catalog.refresh import refresh_router
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.recommendations import recommendation_router
@@ -85,6 +86,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(environment_router(sessions, auth, wait_timeout=agent_wait_timeout))
     app.include_router(candidate_router(sessions, auth))
     app.include_router(catalog_router(sessions, auth))
+    app.include_router(refresh_router(sessions, auth))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):

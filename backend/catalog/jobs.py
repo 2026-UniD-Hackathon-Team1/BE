@@ -63,6 +63,29 @@ def expire_jobs(session):
         error="worker_interrupted", updated_at=utc_now()))
 
 
+def enqueue_job(session, request, profile_id, request_key):
+    """웹과 예약 워커에서 같은 멱등성과 활성 슬롯 규칙으로 작업을 만든다."""
+    payload = request.model_dump(mode="json")
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMIT_LOCK})
+    expire_jobs(session)
+    existing = session.scalar(select(CatalogSyncJob).where(
+        CatalogSyncJob.profile_id == profile_id, CatalogSyncJob.request_key == request_key))
+    if existing:
+        if existing.request_hash != digest and SyncRequest.model_validate(
+                existing.config_json).model_dump(mode="json") != payload:
+            raise HTTPException(409, detail={"code": "idempotency_conflict", "message": "같은 요청 키의 내용이 다릅니다."})
+        return existing, False
+    if session.scalar(select(CatalogSyncJob.id).where(CatalogSyncJob.active_slot == 1)):
+        raise HTTPException(409, detail={"code": "catalog_sync_busy", "message": "진행 중인 수집이 있습니다."})
+    job = CatalogSyncJob(id="sync_" + uuid4().hex, profile_id=profile_id,
+        request_key=request_key, request_hash=digest, config_json=payload,
+        active_slot=1, expires_at=expires_later())
+    session.add(job)
+    session.flush()
+    return job, True
+
+
 def run_job(sessions, job_id, client_factory=GithubClient):
     """한 서버 작업만 실행하며 저장소별 진행과 최종 결과를 DB에 남긴다."""
     client = None
@@ -128,27 +151,11 @@ def catalog_router(sessions, auth, *, client_factory=GithubClient):
              request_key: str = Header(..., alias="Idempotency-Key", min_length=1, max_length=128,
                                        pattern=r"^[A-Za-z0-9_.:-]+$")):
         """요청 키 중복을 재사용하고 다른 활성 수집은 충돌로 반환한다."""
-        payload = request.model_dump(mode="json")
-        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         with sessions.begin() as session:
-            session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMIT_LOCK})
-            expire_jobs(session)
-            existing = session.scalar(select(CatalogSyncJob).where(
-                CatalogSyncJob.profile_id == profile_id, CatalogSyncJob.request_key == request_key))
-            if existing:
-                if existing.request_hash != digest and SyncRequest.model_validate(
-                        existing.config_json).model_dump(mode="json") != payload:
-                    raise HTTPException(409, detail={"code": "idempotency_conflict", "message": "같은 요청 키의 내용이 다릅니다."})
-                return serialize_job(existing)
-            if session.scalar(select(CatalogSyncJob.id).where(CatalogSyncJob.active_slot == 1)):
-                raise HTTPException(409, detail={"code": "catalog_sync_busy", "message": "진행 중인 수집이 있습니다."})
-            job = CatalogSyncJob(id="sync_" + uuid4().hex, profile_id=profile_id,
-                request_key=request_key, request_hash=digest, config_json=payload,
-                active_slot=1, expires_at=expires_later())
-            session.add(job)
-            session.flush()
+            job, created = enqueue_job(session, request, profile_id, request_key)
             response = serialize_job(job)
-        background.add_task(run_job, sessions, job.id, client_factory)
+        if created:
+            background.add_task(run_job, sessions, job.id, client_factory)
         return response
 
     @router.get("/jobs/{job_id}", response_model=SyncJobResponse, summary="서버 수집 작업 조회")
