@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string"},
+          "line": {"type": "integer"},
+          "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+          "issue": {"type": "string"},
+          "evidence": {"type": "string"},
+          "suggested_fix": {"type": "string"}
+        },
+        "required": ["path", "line", "severity", "issue", "evidence", "suggested_fix"]
+      }
+    },
+    "summary": {"type": "string"}
+  },
+  "required": ["findings", "summary"]
+}
