@@ -10,11 +10,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.catalog.config import CollectionConfig, RepositoryConfig
 from backend.catalog.classification import CLASSIFIER_VERSION, classify_bundle
+from backend.catalog.policy import bind_policy
 from backend.catalog.github_client import CollectionError, GithubClient, RepositorySnapshot
 from backend.models import Asset, AssetVersion, ChangeEvent, Source, utc_now
 
 STOP_ERRORS = {"rate_limited", "authentication_failed", "forbidden",
-               "request_budget_exceeded", "collection_deadline_exceeded"}
+               "request_budget_exceeded", "collection_deadline_exceeded", "collection_cooldown"}
 
 
 def stable_id(prefix: str, value: str) -> str:
@@ -37,6 +38,8 @@ class CatalogCollector:
         """DB 세션과 수집 클라이언트를 주입받아 실행 환경 의존성을 분리한다."""
         self.sessions = sessions
         self.client = client
+        if client.before_request is None:
+            bind_policy(sessions, client)
 
     def collect(self, config: RepositoryConfig, *, batch_size=5):
         """한 회차의 고정 원본을 폴더 단위로 저장하고 다음 위치를 남긴다."""

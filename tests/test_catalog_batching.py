@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from backend.catalog.config import CollectionConfig, RepositoryConfig
 from backend.catalog.github_client import GithubClient
 from backend.catalog.jobs import catalog_router
+from backend.catalog.policy import bind_policy
 from backend.catalog.service import CatalogCollector
 from backend.models import AssetVersion, ChangeEvent, Source
 from test_catalog import FakeGithub
@@ -25,6 +26,7 @@ class PinnedGithub(FakeGithub):
         self.files["README.md"] = b"Review tools"
         self.history = {self.sha: dict(self.files)}
         self.fail_path = None
+        self.clock = 1700000000
 
     def handle(self, request):
         """브랜치가 전진해도 기존 트리와 콘텐츠를 고정 SHA로 제공한다."""
@@ -67,6 +69,7 @@ def batches(database):
     def collect(*, size=5, budget=50, config=None):
         """프로세스 재시작처럼 클라이언트를 새로 만들어 다음 배치를 수집한다."""
         client = GithubClient(transport=httpx.MockTransport(remote.handle), max_requests=budget)
+        bind_policy(sessions, client, clock=lambda: remote.clock)
         try:
             result = CatalogCollector(sessions, client).collect(
                 config or RepositoryConfig(repository="example/review"), batch_size=size)
@@ -128,6 +131,7 @@ def test_failed_folder_retains_cursor_and_prior_versions(batches):
         assert session.get(Source, "github:example/review").sync_state["batch"]["next"] == 2
         assert session.scalar(select(func.count()).select_from(AssetVersion)) == 2
     remote.fail_path = None
+    remote.clock += 61
     remote.requests.clear()
     resumed, _ = collect(size=2)
     assert resumed["new_versions"] == 2 and resumed["completed_units"] == 4

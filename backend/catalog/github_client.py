@@ -64,6 +64,8 @@ class GithubClient:
             raise ValueError("invalid collection budget")
         self.max_requests = max_requests
         self.request_count = 0
+        self.before_request = None
+        self.observe_response = None
         self.deadline = time.monotonic() + timeout_seconds
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -81,11 +83,16 @@ class GithubClient:
         self.check_budget()
         if self.request_count >= self.max_requests:
             raise CollectionError("request_budget_exceeded")
+        if self.before_request:
+            self.before_request()
+        self.check_budget()
         self.request_count += 1
         try:
             with self.client.stream("GET", path, params=params,
                                     timeout=min(15, max(0.1, self.deadline - time.monotonic()))) as response:
                 status = response.status_code
+                if self.observe_response:
+                    self.observe_response(status, response.headers)
                 if status == 429 or (status == 403 and (
                     response.headers.get("X-RateLimit-Remaining") == "0" or response.headers.get("Retry-After")
                 )):

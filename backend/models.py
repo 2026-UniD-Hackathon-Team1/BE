@@ -38,6 +38,13 @@ class CatalogSyncJob(Base):
     )
 
 
+class CatalogRuntime(Base):
+    __tablename__ = "catalog_runtime"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[str] = mapped_column(String, default=utc_now)
+
+
 class Profile(Base):
     __tablename__ = "profile"
     id: Mapped[str] = mapped_column(String, primary_key=True)
