@@ -58,6 +58,14 @@ def test_completed_comparison_records_user_decision_and_history(database):
         assert client.get("/api/history", headers=headers).json()[0]["payload"]["reason"] == "결과가 더 명확함"
 
 
+def test_comparison_detail_has_openapi_response_contract(database):
+    engine, _, _ = database
+    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+        operation = client.get("/openapi.json").json()["paths"]["/api/comparisons/{comparison_id}"]["get"]
+        schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        assert schema["$ref"].endswith("/ComparisonDetail")
+
+
 def test_register_input_rejects_path_escape(database, tmp_path):
     engine, sessions, _ = database
     root = tmp_path / "approved"
@@ -126,12 +134,14 @@ def test_comparison_keeps_inputs_separate_by_arm(database, tmp_path, monkeypatch
         detail = client.get(f"/api/comparisons/{response.json()['comparison_id']}", headers=headers).json()
         assert detail["status"] == "done"
         assert [item["input_id"] for item in detail["inputs"]] == ids
+        assert all("scan_root" not in item for item in detail["inputs"])
         assert len(seen) == input_count
         assert seen[0][1] != seen[1][1]
         assert {run["arm"] for run in detail["runs"]} == {"baseline", "candidate"}
         for run in detail["runs"]:
             assert [item["input_id"] for item in run["inputs"]] == ids
-            assert len({item["event_log_path"] for item in run["inputs"]}) == input_count
+            assert all("event_log_path" not in item for item in run["inputs"])
+            assert all("event_log_path" not in item for item in run["result"]["inputs"])
             assert [item["result"]["summary"] for item in run["inputs"]] == [
                 f"{run['arm']}:{name}" for name in ("first.py", "second.py", "third.py")[:input_count]]
         duplicate = client.post("/api/comparisons", headers=headers,
