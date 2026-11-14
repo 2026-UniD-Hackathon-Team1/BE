@@ -1,7 +1,7 @@
 """A-owned catalog and user context. Version IDs remain stable for B."""
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -135,3 +135,119 @@ class Recommendation(Base):
         CheckConstraint("status IN ('new', 'snoozed', 'dismissed', 'compared', 'applied')"),
         Index("idx_recommendation_profile", "profile_id", "status", "score"),
     )
+
+
+class Comparison(Base):
+    __tablename__ = "comparison"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profile.id"))
+    recommendation_id: Mapped[str | None] = mapped_column(ForeignKey("recommendation.id"))
+    method_id: Mapped[str] = mapped_column(String)
+    method_version: Mapped[int] = mapped_column(Integer)
+    candidate_version_id: Mapped[str] = mapped_column(ForeignKey("asset_version.id"))
+    input_manifest: Mapped[list] = mapped_column("input_manifest_json", JSON)
+    input_sha256: Mapped[str] = mapped_column(String)
+    plan: Mapped[dict] = mapped_column("plan_json", JSON)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    user_decision: Mapped[str | None] = mapped_column(String)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
+    completed_at: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["method_id", "method_version"],
+            ["work_method.id", "work_method.version"],
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'evaluating', 'done', 'failed', 'cancelled')"
+        ),
+        CheckConstraint(
+            "user_decision IS NULL OR user_decision IN ('baseline', 'candidate', 'abstain')"
+        ),
+        Index("idx_comparison_profile", "profile_id", "created_at"),
+    )
+
+
+class Run(Base):
+    __tablename__ = "run"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    comparison_id: Mapped[str] = mapped_column(ForeignKey("comparison.id"))
+    arm: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    skill_usage_status: Mapped[str] = mapped_column(String, default="unconfirmed")
+    result_json: Mapped[dict | None] = mapped_column(JSON)
+    event_log_path: Mapped[str | None] = mapped_column(Text)
+    metrics_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    failure_code: Mapped[str | None] = mapped_column(String)
+    started_at: Mapped[str | None] = mapped_column(String)
+    ended_at: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        UniqueConstraint("comparison_id", "arm"),
+        CheckConstraint("arm IN ('baseline', 'candidate')"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'timeout', 'interrupted')"
+        ),
+        CheckConstraint(
+            "skill_usage_status IN ('not_expected', 'confirmed', 'unconfirmed')"
+        ),
+    )
+
+
+class Finding(Base):
+    __tablename__ = "finding"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    comparison_id: Mapped[str] = mapped_column(ForeignKey("comparison.id"))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("run.id"))
+    canonical_group: Mapped[str | None] = mapped_column(String)
+    path: Mapped[str | None] = mapped_column(Text)
+    line_number: Mapped[int | None] = mapped_column(Integer)
+    description: Mapped[str] = mapped_column(Text)
+    verification: Mapped[str] = mapped_column(String, default="unverified")
+    verification_evidence: Mapped[dict] = mapped_column(
+        "verification_evidence_json", JSON, default=dict
+    )
+    reviewed_at: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        CheckConstraint(
+            "verification IN ('unverified', 'confirmed', 'false_positive')"
+        ),
+    )
+
+
+class Snapshot(Base):
+    __tablename__ = "snapshot"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    target_path: Mapped[str] = mapped_column(Text)
+    backup_path: Mapped[str] = mapped_column(Text)
+    before_sha256: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ApplyRecord(Base):
+    __tablename__ = "apply_record"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    comparison_id: Mapped[str] = mapped_column(ForeignKey("comparison.id"))
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshot.id"))
+    candidate_version_id: Mapped[str] = mapped_column(ForeignKey("asset_version.id"))
+    target_path: Mapped[str] = mapped_column(Text)
+    applied_sha256: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="applying")
+    applied_at: Mapped[str | None] = mapped_column(String)
+    rolled_back_at: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('applying', 'applied', 'rolled_back', 'recovery_required')"
+        ),
+    )
+
+
+class EventLog(Base):
+    __tablename__ = "event_log"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profile.id"))
+    event_type: Mapped[str] = mapped_column(String)
+    subject_id: Mapped[str] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column("payload_json", JSON)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
