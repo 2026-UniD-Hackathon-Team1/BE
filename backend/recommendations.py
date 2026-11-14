@@ -86,8 +86,9 @@ def recommendation_router(sessions, auth):
                 if status != "new" and not include_hidden:
                     continue
                 adapter = approved_adapter(session, version, task)
-                environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id))
-                comparable = bool(adapter and environment and adapter.runner == environment.runner
+                environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id)
+                    .order_by(Environment.scanned_at.desc()).limit(1))
+                comparable = bool(adapter and environment and environment.device_id is None and adapter.runner == environment.runner
                                   and task in adapter.supported_tasks)
                 comparison = session.scalar(select(Comparison).where(
                     Comparison.profile_id == profile_id, Comparison.recommendation_id == recommendation_id)

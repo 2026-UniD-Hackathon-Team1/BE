@@ -12,6 +12,8 @@ from sqlalchemy import select
 
 import backend.agent as agent
 from backend.models import AgentDevice, AgentJob
+from backend.environment_data import ScanFailure, store_environment
+from pydantic import ValidationError
 from backend.schemas import ErrorResponse
 
 JobKind = Literal["scan", "suggest_inputs", "snapshot_inputs", "run_comparison", "apply", "rollback"]
@@ -96,7 +98,7 @@ def job_view(job):
         started_at=job.started_at, finished_at=job.finished_at)
 
 
-def enqueue_job(sessions, profile_id: str, spec: JobSpec):
+def enqueue_job(sessions, profile_id: str, spec: JobSpec, *, reuse_pending=False):
     """서버 내부 생산자가 같은 요청 키로 작업을 중복 생성하지 않도록 한다."""
     digest = agent.secret_hash(canonical_json({"kind": spec.kind, "payload": spec.payload}))
     with sessions.begin() as session:
@@ -111,6 +113,12 @@ def enqueue_job(sessions, profile_id: str, spec: JobSpec):
         now = agent.current_time()
         if device is None or device.last_seen_at < agent.iso_time(now - timedelta(seconds=60)):
             raise HTTPException(409, detail={"code": "AGENT_OFFLINE", "message": "연결 프로그램이 꺼져 있어요."})
+        if reuse_pending:
+            pending = session.scalar(select(AgentJob).where(AgentJob.device_id == device.id,
+                AgentJob.request_hash == digest, AgentJob.status.in_(["queued", "running"]))
+                .order_by(AgentJob.created_at).limit(1))
+            if pending is not None:
+                return job_view(pending)
         if spec.kind == "run_comparison" and not device.codex_ready:
             raise HTTPException(409, detail={"code": "CODEX_NOT_READY", "message": "연결 프로그램의 Codex 로그인 상태를 확인해 주세요."})
         job = AgentJob(id="job_" + uuid4().hex, profile_id=profile_id, device_id=device.id,
@@ -155,6 +163,17 @@ def require_live_lease(job, now):
         raise HTTPException(409, detail={"code": "JOB_LEASE_EXPIRED", "message": "작업 보고 기한이 지났습니다. 현재 작업 상태를 확인해 주세요."})
 
 
+def read_job(sessions, profile_id, job_id):
+    """짧은 트랜잭션으로 소유 작업과 만료 상태를 조회한다."""
+    with sessions.begin() as session:
+        device_id = session.scalar(select(AgentJob.device_id).where(AgentJob.id == job_id, AgentJob.profile_id == profile_id))
+        if device_id is None:
+            raise HTTPException(404, detail={"code": "JOB_NOT_FOUND", "message": "해당 작업을 찾을 수 없습니다."})
+        session.scalar(select(AgentDevice).where(AgentDevice.id == device_id).with_for_update())
+        expire_jobs(session, device_id, agent.current_time())
+        return job_view(session.get(AgentJob, job_id))
+
+
 def job_router(sessions, web_auth):
     """기기 작업 인수와 보고 API 및 웹의 소유 작업 상태 조회를 구성한다."""
     router = APIRouter(prefix="/api/agent/jobs", tags=["agent-jobs"],
@@ -189,13 +208,7 @@ def job_router(sessions, web_auth):
     def status(job_id: str, response: Response, profile_id: str = Depends(web_auth)):
         """서버 대기 시간 초과 뒤에도 같은 작업을 조회하고 만료 상태를 갱신한다."""
         response.headers["Cache-Control"] = "no-store"
-        with sessions.begin() as session:
-            device_id = session.scalar(select(AgentJob.device_id).where(AgentJob.id == job_id, AgentJob.profile_id == profile_id))
-            if device_id is None:
-                raise HTTPException(404, detail={"code": "JOB_NOT_FOUND", "message": "해당 작업을 찾을 수 없습니다."})
-            session.scalar(select(AgentDevice).where(AgentDevice.id == device_id).with_for_update())
-            expire_jobs(session, device_id, agent.current_time())
-            return job_view(session.get(AgentJob, job_id))
+        return read_job(sessions, profile_id, job_id)
 
     @router.post("/{job_id}/progress", status_code=204, summary="작업 진행 보고와 기한 갱신")
     def progress(job_id: str, body: ProgressInput,
@@ -224,6 +237,14 @@ def job_router(sessions, web_auth):
                 return Response(status_code=204)
             now = agent.current_time()
             require_live_lease(job, now)
+            if job.kind == "scan":
+                if body.status == "done":
+                    store_environment(session, device, job, body.result, agent.iso_time(now))
+                elif body.result is not None:
+                    try:
+                        ScanFailure.model_validate(body.result)
+                    except ValidationError:
+                        raise HTTPException(422, detail={"code": "INVALID_SCAN_RESULT", "message": "환경 스캔 실패 결과 형식을 확인해 주세요."}) from None
             job.status, job.result_json, job.message = body.status, body.result, body.message
             job.result_hash = digest
             job.lease_expires_at = None

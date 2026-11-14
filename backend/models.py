@@ -101,6 +101,13 @@ class Environment(Base):
     settings_hash: Mapped[str] = mapped_column(String)
     scan_root: Mapped[str] = mapped_column(Text)
     scanned_at: Mapped[str] = mapped_column(String, default=utc_now)
+    device_id: Mapped[str | None] = mapped_column(String)
+    scan_job_id: Mapped[str | None] = mapped_column(ForeignKey("agent_job.id"))
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (
+        ForeignKeyConstraint(["device_id", "profile_id"], ["agent_device.id", "agent_device.profile_id"]),
+        UniqueConstraint("scan_job_id", name="uq_environment_scan_job"),
+    )
 
 
 class WorkMethod(Base):

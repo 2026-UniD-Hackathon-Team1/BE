@@ -31,7 +31,7 @@ def queue(database):
         yield client, database[1], bearer
 
 
-def add_job(sessions, key="request-1", kind="scan", profile="local"):
+def add_job(sessions, key="request-1", kind="suggest_inputs", profile="local"):
     """파일 원문 대신 고정 식별자를 담은 서버 내부 작업을 생성한다."""
     return enqueue_job(sessions, profile, JobSpec(kind=kind, request_key=key, payload={"scope_id": "approved-project"}))
 

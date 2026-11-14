@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class ErrorDetail(BaseModel):
     code: str
     message: str
+    job_id: str | None = None
 
 
 class ErrorResponse(BaseModel):

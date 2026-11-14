@@ -14,6 +14,7 @@ from backend.settings import database_url as configured_database_url
 from backend.auth import local_auth
 from backend.agent import agent_router
 from backend.agent_jobs import job_router
+from backend.environment import environment_router
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.recommendations import recommendation_router
@@ -43,7 +44,7 @@ def serialize_candidate(asset, version, change, source):
 
 
 def create_app(*, database_url: str | None = None, cors_origins: list[str] | None = None,
-               local_token: str | None = None):
+               local_token: str | None = None, agent_wait_timeout: float = 30.0):
     """설정을 주입할 수 있는 API를 만들고 시작 시 DB 변경이나 외부 통신은 하지 않는다."""
     url = configured_database_url(database_url)
     origins = cors_origins if cors_origins is not None else [
@@ -70,13 +71,14 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
         responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "PUT", "POST", "PATCH", "DELETE"],
-                           allow_headers=["Content-Type", "X-Local-Token"])
+                           allow_headers=["Content-Type", "X-Local-Token", "Idempotency-Key"])
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
     app.include_router(comparison_router(sessions, auth))
     app.include_router(recommendation_router(sessions, auth))
     app.include_router(agent_router(sessions, auth))
     app.include_router(job_router(sessions, auth))
+    app.include_router(environment_router(sessions, auth, wait_timeout=agent_wait_timeout))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):

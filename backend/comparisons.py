@@ -53,6 +53,8 @@ def comparison_router(sessions, auth):
             if environment is None:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "먼저 작업 경로를 승인해 주세요."})
             root = Path(environment.scan_root)
+            if environment.device_id is not None:
+                raise HTTPException(409, detail={"code": "AGENT_INPUTS_NOT_READY", "message": "연결 프로그램의 입력 수집 기능을 준비 중입니다."})
         try:
             manifest = register_input(root, body.relative_paths, ROOT / "runtime" / "inputs", body.task_type)
         except (ValueError, OSError) as error:
@@ -162,6 +164,8 @@ def comparison_router(sessions, auth):
             environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
             if environment is None or not version.artifact_path:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "실행 환경과 후보 파일을 확인해 주세요."})
+            if environment.device_id is not None:
+                raise HTTPException(409, detail={"code": "AGENT_COMPARISON_NOT_READY", "message": "연결 프로그램의 비교 실행 기능을 준비 중입니다."})
             comparison_id = "cmp_" + uuid4().hex
             session.add(Comparison(id=comparison_id, profile_id=profile_id, method_id=method.id,
                 method_version=method.version, candidate_version_id=version.id,
