@@ -18,7 +18,7 @@ HEADERS = {"X-Local-Token": "test-local-token"}
 @pytest.fixture
 def candidate(database):
     """수집 원문과 같은 고정 번들 및 출처로 후보 상세 API를 준비한다."""
-    files = {"SKILL.md": b"---\nname: review\nallowed-tools: [Read, Bash(curl TOP_SECRET), WebFetch]\n---\nReview code.",
+    files = {"SKILL.md": b"---\nname: review\nallowed-tools: [Read, Bash(curl TOP_SECRET), WebFetch]\n---\nReview code with input validation.",
              "scripts/check.py": b"PRIVATE_SCRIPT_BODY"}
     bundle = {"files": {path: base64.b64encode(content).decode() for path, content in files.items()}}
     digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
@@ -34,13 +34,15 @@ def candidate(database):
             artifact_path="C:/TOP_SECRET/local-bundle", metadata_json={"source_verified": True, "source_url": source_url,
                 "bundle": bundle, "repository": {"description": "Declared code review utility",
                     "releases": [{"published_at": "2026-11-01T00:00:00Z"}]}},
-            tags={"task_types": ["code_review"], "languages": ["unknown"],
-                "evidence": [{"category": "task_types", "tag": "code_review", "path": "SKILL.md", "line": 6, "excerpt": "Review code."}]}))
+            tags={"task_types": ["code_review"], "capabilities": ["input_validation"], "languages": ["unknown"],
+                "evidence": [{"category": "task_types", "tag": "code_review", "path": "SKILL.md", "line": 5,
+                    "excerpt": "Review code with input validation."}]}))
         session.flush()
         session.add(ChangeEvent(id="change-real", asset_id="asset-real", to_version_id="ver-real",
             change_type="new", source_url=source_url))
     with TestClient(create_app(database_url=database[2].attributes["database_url"], local_token="test-local-token")) as client:
-        client.put("/api/profile", headers=HEADERS, json={"role": "developer", "primary_language": "python", "task_types": ["code_review"]})
+        client.put("/api/profile", headers=HEADERS, json={"role": "developer", "primary_language": "python",
+            "task_types": ["code_review"], "goals": ["input_validation"]})
         yield client, database[1]
 
 
@@ -138,6 +140,21 @@ def test_tampering_and_demo_never_enable_execution(candidate):
     demo = client.get("/api/candidates/demo_ver_01", headers=HEADERS).json()
     assert demo["source_verification"] == "demo" and demo["verified_source_at"] is None
     assert demo["support_level"] == "information_only" and "demo_candidate" in demo["risk_signal_codes"]
+
+
+def test_repository_test_data_is_excluded_even_with_reviewed_adapter(candidate):
+    """검사에 쓰인 SKILL 문서를 실제 스킬로 추천하거나 실행 지원으로 승격하지 않는다."""
+    client, sessions = candidate
+    add_adapter(sessions)
+    with sessions.begin() as session:
+        session.get(Asset, "asset-real").canonical_key = "github:example/review:tests/fixtures/review"
+    detail = client.get("/api/candidates/ver-real", headers=HEADERS).json()
+    assert detail["support_level"] == "information_only" and detail["adapter_id"] is None
+    assert "repository_fixture" in detail["risk_signal_codes"]
+    assert client.get("/api/catalog/candidates").json()["total"] == 0
+    result = client.get("/api/recommendations?include_excluded=true", headers=HEADERS).json()
+    assert result["items"] == [] and result["excluded"][0]["candidate_version_id"] == "ver-real"
+    assert "테스트 데이터" in result["excluded"][0]["excluded_reasons"][0]
 
 
 def test_historical_version_is_not_replaced_by_current_version(candidate):

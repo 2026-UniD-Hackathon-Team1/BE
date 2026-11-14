@@ -170,6 +170,7 @@ def test_invalid_repository_and_path_are_rejected():
 def test_collected_candidate_reaches_recommendations_with_evidence(catalog):
     """모의 수집 원문이 분류와 API 추천까지 연결되며 미분류 재처리가 멱등적인지 검증한다."""
     collector, remote, sessions = catalog
+    remote.files["skills/review/SKILL.md"] = b"---\nname: review\n---\nReview code with input validation."
     config = RepositoryConfig(repository="example/review")
     collector.collect(config)
     with sessions.begin() as session:
@@ -188,13 +189,13 @@ def test_collected_candidate_reaches_recommendations_with_evidence(catalog):
     headers = {"X-Local-Token": "test-local-token"}
     with TestClient(create_app(database_url=url, local_token="test-local-token")) as client:
         client.put("/api/profile", headers=headers, json={"role": "developer", "primary_language": "python",
-                   "task_types": ["code_review"]})
+                   "task_types": ["code_review"], "goals": ["input_validation"]})
         result = client.get("/api/recommendations", headers=headers)
         assert result.status_code == 200
         items = result.json()["items"]
         assert len(items) == 1
         assert items[0]["candidate_version_id"] == version_id
-        assert items[0]["tag_evidence"][0]["excerpt"] == "Review code."
+        assert items[0]["tag_evidence"][0]["excerpt"] == "Review code with input validation."
         assert items[0]["support_level"] == "information_only"
         assert items[0]["compatibility"] == "unknown"
         assert items[0]["demo"] is False

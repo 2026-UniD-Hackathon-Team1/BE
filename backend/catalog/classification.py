@@ -1,13 +1,13 @@
 """원문에 명시된 작업 설명만 규칙으로 분류하고 파일별 근거를 보존한다."""
 import re
 from pathlib import PurePosixPath
-from backend.catalog.dimensions import extract_dimensions
+from backend.catalog.dimensions import TEST_FIRST_PATTERN, UNSUPPORTED_SECTION, _is_catalog, extract_dimensions
 
-CLASSIFIER_VERSION = "explicit-context-v3"
+CLASSIFIER_VERSION = "explicit-context-v5"
 RULES = {
     "task_types": {
         "code_review": r"\bcode[ -]review\b|\breview(?:s|ing)?\s+(?:(?:the|a|your)\s+)?(?:code|pull requests?|diff|changes|branch|pr)\b|코드\s*리뷰",
-        "test_generation": r"\btest[ -]generation\b|\btest[ -]driven development\b|\b(?:generat(?:e|es|ing)|writ(?:e|es|ing))\s+(?:(?:a|one)\s+)?(?:(?:unit|automated|minimal|failing|integration)\s+){0,2}tests?\b|테스트\s*생성",
+        "test_generation": r"\btest[ -]generation\b|\b(?:generat(?:e|es|ing)|writ(?:e|es|ing))\s+(?:(?:a|the|one)\s+)?(?:(?:unit|automated|minimal|failing|integration)\s+){0,2}tests?\b|테스트\s*생성|" + TEST_FIRST_PATTERN,
     },
     "capabilities": {
         "input_validation": r"\binput[ -]validation\b|입력\s*검증",
@@ -18,8 +18,9 @@ RULES = {
     },
 }
 NEGATED = re.compile(r"\b(?:no|not|never|unsupported|cannot)\b|doesn['’]t|can['’]t|지원하지|지원\s*안|제외", re.I)
-CATALOG = re.compile(r"\b(?:catalog|collection|directory|curated|list)\b.{0,60}\b(?:skills?|tools?|agents?|resources|repositories)\b|"
-                     r"\b(?:skills?|tools?|agents?)\b.{0,30}\b(?:catalog|collection|directory)\b", re.I)
+FUTURE_TASK_CLAIM = re.compile(r"\b(?:roadmap|planned|planning|coming soon|todo|not implemented|future work)\b|"
+    r"\b(?:will|would)\s+(?:support|add|include|implement|provide)\b|\bplan\s+to\b|"
+    r"지원\s*예정|추가\s*예정|추후|향후", re.I)
 
 
 def supported_clause(clause, match):
@@ -32,7 +33,15 @@ def supported_clause(clause, match):
         return False
     if re.search(r"\bwithout\s+(?:(?:supporting|providing|performing)\s+)?$", before, re.I):
         return False
-    return not re.search(r"\b(?:roadmap|planned|coming soon|todo|not implemented)\b|지원\s*예정|추가\s*예정", clause, re.I)
+    return not FUTURE_TASK_CLAIM.search(clause)
+
+
+def _bounded_excerpt(line, clause, match):
+    """긍정 주장이 나온 원문 위치 주변만 짧게 보존한다."""
+    offset = line.find(clause)
+    position = offset + match.start() if offset >= 0 else line.find(match.group(0))
+    start = max(0, position - 80)
+    return line[start:start + 240]
 
 
 def classify_bundle(files: dict[str, bytes]) -> dict:
@@ -48,11 +57,10 @@ def classify_bundle(files: dict[str, bytes]) -> dict:
             text = content.decode("utf-8-sig")
         except UnicodeDecodeError:
             continue
-        if not manifests:
-            skill_links = re.findall(r"\[[^\]]+\]\([^\s)]*skills/[^\s)]+\)", text, re.I)
-            if CATALOG.search(text[:16000]) or len(skill_links) >= 3:
-                continue
+        if _is_catalog(text):
+            continue
         fence, frontmatter, comment = None, False, False
+        blocked_depth = None
         description = False
         for number, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
@@ -74,25 +82,34 @@ def classify_bundle(files: dict[str, bytes]) -> dict:
                 continue
             marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
             if marker:
-                marker = marker.group(1)
+                current = marker.group(1)
                 if fence is None:
-                    fence = marker
-                elif fence[0] == marker[0] and len(marker) >= len(fence):
+                    fence = current
+                elif fence[0] == current[0] and len(current) >= len(fence) and not line[marker.end():].strip():
                     fence = None
                 continue
-            if (fence or len(line) > 500 or stripped.startswith((">", "|")) or
+            if (fence or len(line) > 2000 or stripped.startswith((">", "|")) or
                 (not frontmatter and line.startswith(("    ", "\t"))) or
                 re.search(r"\[[^\]]+\]\(|^\s*\[[^\]]+\]:|^(?:example|예시)\s*:", stripped, re.I)):
                 continue
+            heading = re.match(r"^ {0,3}(#{1,6})\s+(.*)$", line)
+            if heading:
+                depth, title = len(heading.group(1)), heading.group(2)
+                if blocked_depth is not None and depth <= blocked_depth:
+                    blocked_depth = None
+                if NEGATED.search(title) or FUTURE_TASK_CLAIM.search(title) or UNSUPPORTED_SECTION.search(title):
+                    blocked_depth = depth if blocked_depth is None else min(depth, blocked_depth)
+            if blocked_depth is not None:
+                continue
             prose = re.sub(r"(`+).*?\1", "", stripped)
-            for clause in re.split(r"(?<=[.!?;])\s+|[,;]\s*", prose):
+            for clause in re.split(r"(?<=[.!?])\s+|;\s*|\s+(?:but|whereas|however)\s+|하지만|반면", prose, flags=re.I):
                 for category, rules in RULES.items():
                     for tag, pattern in rules.items():
                         match = re.search(pattern, clause, re.I)
                         if tag not in tags[category] and match and supported_clause(clause, match):
                             tags[category].append(tag)
                             tags["evidence"].append({"category": category, "tag": tag,
-                                "path": path, "line": number, "excerpt": line})
+                                "path": path, "line": number, "excerpt": _bounded_excerpt(line, clause, match)})
     dimensions = extract_dimensions(files)
     tags["dimensions"] = dimensions
     tags["languages"] = dimensions["languages"] or ["unknown"]

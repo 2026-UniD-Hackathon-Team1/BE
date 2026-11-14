@@ -1,17 +1,49 @@
 """실제 수집 대상은 운영자가 지정한 설정에서만 읽는다."""
 import re
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from backend.catalog.dimensions import RULES
+
+
+FOLDER_HINT_KEYS = {"code_review", "test_generation"} | {
+    key for values in RULES.values() for key in values
+}
+FIXTURE_COMPONENTS = {"tests", "test", "__tests__", "fixtures", "fixture", "testdata",
+    "node_modules", ".venv", ".git"}
+
+
+def is_fixture_folder(path):
+    """정확한 경로 구성요소로 저장소 테스트 자료와 의존성 폴더를 구분한다."""
+    return isinstance(path, str) and any(part.casefold() in FIXTURE_COMPONENTS for part in path.split("/"))
+
+
+def validate_folder_hints(values):
+    """자유 문장 대신 허용된 기술 식별자만 중복 없이 우선순위 힌트로 받는다."""
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) or value not in FOLDER_HINT_KEYS for value in values
+    ):
+        raise ValueError("folder hints must be canonical technology or task keys")
+    return list(dict.fromkeys(values))
 
 
 class RepositoryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     repository: str
     skill_folders: list[str] = Field(default_factory=list, max_length=20)
+    folder_hints: list[str] = Field(default_factory=list, max_length=20,
+        description="자동 발견 폴더를 먼저 읽을 순서의 약한 힌트이며 기능 지원 근거와 구분")
 
 
     # 빈 폴더 목록은 저장소 트리에서 SKILL.md를 자동 탐색한다.
+
+    @field_validator("folder_hints", mode="before")
+    @classmethod
+    def validate_hints(cls, values):
+        """중복을 제거한 최대 20개 정규 식별자만 허용한다."""
+        return validate_folder_hints(values)
 
     @field_validator("repository")
     @classmethod
@@ -38,9 +70,26 @@ class CollectionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repositories: list[RepositoryConfig] = Field(default_factory=list, max_length=20)
     discovery_queries: list[str] = Field(default_factory=list, max_length=5)
+    discovery_sort: dict[str, Literal["updated", "best_match"]] = Field(default_factory=dict, max_length=5,
+        description="검색어별 최신 갱신 또는 GitHub 기본 관련성 정렬. 생략한 검색어는 updated 사용")
+    discovery_hints: list[str] = Field(default_factory=list, max_length=20,
+        description="검색으로 찾은 큰 저장소 안에서 관련 폴더를 먼저 읽을 정규 식별자")
     discovery_limit: int = Field(default=5, ge=1, le=20)
     batch_size: int = Field(default=5, ge=1, le=20, description="저장소당 이번 요청에서 처리할 최대 번들 수")
     resume_pending: bool = Field(default=False, description="이미 발견한 미완료 후보를 DB 커서부터 수집 대상에 포함")
+
+    @model_validator(mode="after")
+    def validate_query_sorts(self):
+        """정렬 설정이 이번 작업의 검색어를 벗어나거나 별도 검색을 추가하지 못하게 한다."""
+        if set(self.discovery_sort) - set(self.discovery_queries):
+            raise ValueError("discovery sort keys must be planned queries")
+        return self
+
+    @field_validator("discovery_hints", mode="before")
+    @classmethod
+    def validate_hints(cls, values):
+        """검색 문구나 개인정보를 폴더 우선순위 힌트로 저장하지 않는다."""
+        return validate_folder_hints(values)
 
     @field_validator("discovery_queries")
     @classmethod

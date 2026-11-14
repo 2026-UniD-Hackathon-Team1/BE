@@ -215,3 +215,106 @@ def test_evidence_is_bounded_contains_match_and_deduplicates_values():
 def test_missing_or_invalid_primary_document_has_no_inferred_values(files):
     """대표 문서를 읽을 수 없으면 다른 파일이나 인코딩을 추측하지 않는다."""
     assert not any(extract_dimensions(files).values())
+
+
+@pytest.mark.parametrize("text", [
+    "# Test-Driven Development (TDD)",
+    "Use test-first for selected behavior where regression risk warrants it.",
+    "Apply the red-green-refactor cycle to one behavior.",
+    "Write the test first. Watch it fail. Write minimal code to pass.",
+    "테스트 주도 개발로 변경할 동작을 먼저 확인한다.",
+])
+def test_explicit_test_first_procedures_are_test_design_without_other_inference(text):
+    """명시적인 테스트 우선 절차를 설계 기능으로 인식하되 다른 검증 기능은 만들지 않는다."""
+    result = _extract(text)
+    assert result["capabilities"] == ["test_design"]
+    assert result["languages"] == [] and result["tools"] == []
+    evidence = result["evidence"][0]
+    assert evidence["value"] == "test_design" and evidence["line"] == 1
+    assert evidence["excerpt"] in text and len(evidence["excerpt"]) <= 240
+
+
+@pytest.mark.parametrize("text", [
+    "Test-driven development is unsupported.", "No test-first workflow is provided.",
+    "We plan to add test-first development.", "테스트 주도 개발은 지원하지 않는다.",
+    "# Roadmap\nTest-driven development\n# Current\nNo testing features.",
+    "```text\nTest-Driven Development\n```", "TDD is an acronym in this glossary.",
+])
+def test_test_first_negations_plans_code_and_ambiguous_acronyms_stay_unknown(text):
+    """동의어도 부정과 계획 및 코드와 단독 약어에서는 현재 기능으로 분류하지 않는다."""
+    assert _extract(text)["capabilities"] == []
+
+
+def test_single_skill_directory_note_is_not_a_catalog_declaration():
+    """실제 브라우저 스킬의 단수 폴더 참조 때문에 대표 문서 전체를 버리지 않는다."""
+    text = ("---\nname: agent-browser\ndescription: Browser automation CLI for AI agents.\n---\n"
+            "# Browser Automation with agent-browser\n"
+            "Read LOCAL-INSIGHTS.md in this skill directory for tested workflows.")
+    result = _extract(text)
+    assert result["capabilities"] == ["browser_testing"]
+    assert result["evidence"][0]["line"] == 3
+
+
+@pytest.mark.parametrize("title", [
+    "A collection of agent skills", "A curated list of tools", "Skill catalog", "Skills directory",
+])
+def test_real_catalog_stays_excluded_even_with_skill_manifest_name(title):
+    """대표 파일 이름이 SKILL.md여도 실제 목록 설명의 기능을 개별 스킬에 섞지 않는다."""
+    assert not any(_extract("# " + title + "\nSupports test-first development and browser automation.").values())
+
+
+def test_later_explicit_target_survives_first_mention_in_title():
+    """제목의 첫 기술 언급을 유지하면서 뒤의 실제 지원 선언도 별도 보존한다."""
+    result = _extract("# rust-test-design for codex-cli examples\n"
+                      "Supports Rust and Codex CLI.\nProvides test generation and test design.")
+    first = next(item for item in result["evidence"] if item["value"] == "rust")
+    assert first["line"] == 1 and first["excerpt"].startswith("# rust-test-design")
+    targets = result["target_evidence"]
+    assert {(item["dimension"], item["value"], item["line"]) for item in targets} == {
+        ("languages", "rust", 2), ("tools", "codex_cli", 2)}
+    assert all(item["excerpt"] == "Supports Rust and Codex CLI." for item in targets)
+
+
+def test_first_strong_target_per_technology_is_deterministic_and_bounded():
+    """반복된 지원 문장은 중복 없이 첫 강한 선언 위치만 유지한다."""
+    text = "# Python and Rust notes\nSupports Python and Rust and Codex CLI.\n" + "Supports Rust.\n" * 150
+    result = _extract(text)
+    assert len(result["target_evidence"]) == 3
+    assert all(item["line"] == 2 and len(item["excerpt"]) <= 240 for item in result["target_evidence"])
+    assert all(set(item) == {"dimension", "value", "path", "line", "excerpt"}
+               for item in result["target_evidence"])
+
+
+@pytest.mark.parametrize("claim", [
+    "Rust is not supported.", "We plan to support Rust.",
+    "The tutorial uses Rust examples.", "When the project uses Rust, inspect the source.",
+    "```text\nSupports Rust.\n```", "## Roadmap\nSupports Rust.",
+])
+def test_weak_title_does_not_upgrade_unsupported_or_incidental_claim(claim):
+    """제목의 언급 뒤에 부정이나 계획과 예제가 와도 지원 대상으로 승격하지 않는다."""
+    result = _extract("# Rust notes\n" + claim)
+    assert result["languages"] == ["rust"]
+    assert result["target_evidence"] == []
+
+
+def test_strong_claim_excerpt_keeps_later_clause_and_its_support_verb():
+    """같은 긴 줄에 먼저 나온 단순 언급보다 뒤의 지원 선언 문구를 정확히 보존한다."""
+    text = "Rust appears in examples. " + "Background context. " * 25 + "Supports Rust and Codex CLI."
+    result = _extract(text)
+    assert {item["value"] for item in result["target_evidence"]} == {"rust", "codex_cli"}
+    assert all("Supports Rust and Codex CLI" in item["excerpt"] for item in result["target_evidence"])
+    assert all(item["excerpt"] in text and len(item["excerpt"]) <= 240 for item in result["target_evidence"])
+
+
+def test_explicit_only_heading_is_distinct_from_plain_technology_title():
+    """기술명이 들어간 제목과 명시적인 전용 대상 제목을 구분한다."""
+    assert _extract("# Python notes")["target_evidence"] == []
+    assert _extract("# Python-only")["target_evidence"][0]["value"] == "python"
+
+
+@pytest.mark.parametrize("claim", ["Supports Go and Codex CLI.", "This skill targets Go.", "Works with Go."])
+def test_go_context_match_does_not_consume_its_explicit_support_verb(claim):
+    """일반 동사와 구분하는 Go 문맥 규칙 때문에 실제 지원 선언의 동사를 잃지 않는다."""
+    result = _extract(claim)
+    assert any(item["dimension"] == "languages" and item["value"] == "go"
+        for item in result["target_evidence"])

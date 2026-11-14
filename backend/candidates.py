@@ -9,6 +9,7 @@ from sqlalchemy import select
 from backend.candidate_schemas import CandidateDetail, Maintainer, SourceMetadata
 from backend.catalog.metadata import manifest_license, public_facts
 from backend.catalog.inspection import PERMISSION_LABELS, inspect_bundle, public_url, verified_source
+from backend.catalog.eligibility import repository_fixture
 from backend.models import (AgentDevice, Asset, AssetVersion, CandidateAdapter, ChangeEvent,
                             Environment, Recommendation, Source)
 from backend.schemas import ErrorResponse, TagEvidence
@@ -88,7 +89,8 @@ def candidate_detail(session, version, profile_id):
     adapters = session.scalars(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == version.id).order_by(CandidateAdapter.id)).all()
     adapter, review_status = reviewed_adapter(adapters, version.bundle_sha256)
     executable = bool(adapter and verified and inspection["integrity_status"] == "verified"
-        and asset.kind == "skill" and inspection["manifest_present"] and repository.get("archived") is not True)
+        and asset.kind == "skill" and inspection["manifest_present"] and repository.get("archived") is not True
+        and not repository_fixture(asset, version))
     approved = adapter if executable else None
     compatible, reasons = compatibility(session, profile_id, approved)
     permissions = inspection["permissions"]
@@ -99,6 +101,8 @@ def candidate_detail(session, version, profile_id):
         for evidence in declaration["evidence"]:
             evidence["source_url"] = source_url.rstrip("/") + "/" + quote(evidence["path"]) + f"#L{evidence['line']}" if verified else None
     signals = {}
+    if repository_fixture(asset, version):
+        signals["repository_fixture"] = "저장소 내부 테스트 데이터이며 일반 추천과 실행 승인에서 제외합니다."
     if not verified:
         signals["source_unverified"] = "출처와 고정 원문 버전의 확인이 필요합니다."
     if demo:

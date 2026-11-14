@@ -17,6 +17,7 @@ def test_offline_reclassification_preserves_content_and_removes_catalog_recommen
     """옛 목록 오탐 태그를 원본 변경 없이 정정하고 추천에서 제거한다."""
     remote = FakeGithub()
     remote.files["README.md"] = b"A collection of agent skills.\nCode review and generate tests."
+    remote.files["skills/review/SKILL.md"] = b"---\nname: review\n---\nReview code with input validation."
     github = GithubClient(transport=httpx.MockTransport(remote.handle))
     collector = CatalogCollector(database[1], github)
     collector.collect(RepositoryConfig(repository="example/review"))
@@ -43,7 +44,8 @@ def test_offline_reclassification_preserves_content_and_removes_catalog_recommen
             assert version.metadata_json["classifier_version"] == CLASSIFIER_VERSION
     with TestClient(create_app(database_url=database[2].attributes["database_url"], local_token="test-token")) as api:
         headers = {"X-Local-Token": "test-token"}
-        api.put("/api/profile", headers=headers, json={"role": "dev", "primary_language": "python", "task_types": ["code_review"]})
+        api.put("/api/profile", headers=headers, json={"role": "dev", "primary_language": "python",
+            "task_types": ["code_review"], "goals": ["input_validation"]})
         cards = api.get("/api/recommendations", headers=headers).json()["items"]
         assert len(cards) == 1 and "/ skills/review" in cards[0]["title"]
         assert any("SKILL.md:4" in reason for reason in cards[0]["related_reasons"])

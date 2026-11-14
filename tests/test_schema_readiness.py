@@ -26,9 +26,10 @@ def test_old_revision_reproduces_missing_agent_and_upgrade_preserves_profile(emp
     """기기 기능 이전 DB의 실제 조회 오류를 재현하고 기존 프로필을 보존하며 올린다."""
     engine, sessions, config = empty_database
     command.upgrade(config, "e20261114a01")
-    with sessions.begin() as session:
-        session.add(Profile(id="preserved", role="preserved-role", primary_language="python",
-            task_types=["code_review"], goals=["input_validation"], preferences={}))
+    # 과거 스키마에는 이후 모델 열이 없으므로 당시 열만 사용해 기존 데이터를 준비한다.
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO profile (id,role,primary_language,task_types_json,goals_json,preferences_json,version,updated_at) "
+            "VALUES ('preserved','preserved-role','python','[\"code_review\"]','[\"input_validation\"]','{}',1,'2026-11-15T00:00:00Z')"))
     with engine.connect() as connection:
         with pytest.raises(ProgrammingError, match="agent_device"):
             connection.execute(select(AgentDevice.id)).all()

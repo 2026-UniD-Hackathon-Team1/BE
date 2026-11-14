@@ -3,7 +3,10 @@
 import re
 
 
-DIMENSIONS_VERSION = "document-dimensions-v1"
+DIMENSIONS_VERSION = "document-dimensions-v3"
+TEST_FIRST_PATTERN = (r"\btest[ -]driven[ -]development\b|\btest[ -]first\b|"
+    r"\bred[ -]green[ -]refactor\b|\bwrite\s+(?:(?:a|the|one)\s+)?test\s+first\b|"
+    r"테스트\s*주도\s*개발|테스트\s*우선\s*(?:개발|전략|접근)")
 
 # 문서의 기술 언급은 관찰값이며 설치 가능성이나 실행 호환성을 보증하지 않는다.
 RULES = {
@@ -12,7 +15,7 @@ RULES = {
         "javascript": r"\bjavascript\b|(?-i:\bJS\b)|자바스크립트",
         "typescript": r"\btypescript\b|(?-i:\bTS\b)|타입스크립트",
         "rust": r"\brust\b|러스트",
-        "go": r"\bgolang\b|\bgo\s+(?:language|code|projects?|modules?|development)\b|\b(?:supports?|using|for)\s+go\b|고랭",
+        "go": r"\bgolang\b|\bgo\s+(?:language|code|projects?|modules?|development)\b|\b(?:supports?|targets?|using|for)\s+go\b|\bworks?\s+with\s+go\b|고랭",
         "java": r"\bjava\b|자바(?!스크립트)",
         "csharp": r"(?<!\w)c#(?!\w)|\bc[ -]sharp\b|씨샵",
         "cpp": r"(?<!\w)c\+\+(?!\w)|\bcpp\b",
@@ -62,7 +65,7 @@ RULES = {
         "accessibility": r"\baccessibility\b|\ba11y\b|\bwcag\b|접근성",
         "performance": r"\bperformance\b|성능\s*(?:개선|최적화|분석|측정|검토|테스트)",
         "browser_testing": r"\bbrowser[ -](?:tests?|testing|automation)\b|\bend[ -]to[ -]end[ -](?:tests?|testing)\b|\be2e[ -](?:tests?|testing)\b|브라우저\s*(?:테스트|자동화)|종단간\s*테스트",
-        "test_design": r"\btest[ -]design\b|\b(?:design|designing)\s+test\s+cases\b|\btesting\s+strateg(?:y|ies)\b|테스트\s*(?:설계|전략)|경계값\s*(?:분석|테스트)",
+        "test_design": r"\btest[ -]design\b|\b(?:design|designing)\s+test\s+cases\b|\btesting\s+strateg(?:y|ies)\b|테스트\s*(?:설계|전략)|경계값\s*(?:분석|테스트)|" + TEST_FIRST_PATTERN,
         "database_changes": r"\bdatabase[ -](?:changes?|migrations?)\b|\bschema[ -]migrations?\b|데이터베이스\s*(?:변경|마이그레이션)|스키마\s*(?:변경|마이그레이션)",
         "typing": r"\btype[ -](?:hints?|safety|checking|annotations?)\b|\bstatic[ -]typing\b|타입\s*(?:힌트|안전성|검사|검증)|정적\s*타이핑",
     },
@@ -73,8 +76,9 @@ COMPILED_RULES = {
     for dimension, values in RULES.items()
 }
 CATALOG = re.compile(
-    r"\b(?:catalog|collection|directory|curated|awesome|list)\b.{0,70}\b(?:skills?|tools?|agents?|repositories)\b|"
-    r"\b(?:skills?|tools?|agents?)\b.{0,40}\b(?:catalog|collection|directory|list)\b|"
+    r"\b(?:catalog|collection|directory|curated|awesome|list)\b.{0,70}\b(?:skills|tools|agents|repositories)\b|"
+    r"\b(?:skills|tools|agents)\b.{0,40}\b(?:catalog|collection|directory|list)\b|"
+    r"\b(?:skill|tool|agent)[ -](?:catalog|collection)\b|"
     r"(?:스킬|도구|에이전트)\s*(?:목록|모음|카탈로그)", re.I,
 )
 NEGATIVE = re.compile(
@@ -172,6 +176,39 @@ def _positive_clause(clause: str) -> bool:
     return not (NEGATIVE.search(clause) or FUTURE.search(clause))
 
 
+def declares_target(dimension, value, excerpt):
+    """기술의 단순 언급과 스킬 자체의 명시적인 지원 대상 선언을 구분한다."""
+    pattern = RULES.get(dimension, {}).get(value)
+    if dimension not in {"languages", "frameworks", "tools"} or not pattern:
+        return False
+    # Go의 일반 언급 판별에 포함된 지원 동사를 기술 이름 매칭에서 다시 소비하지 않는다.
+    if dimension == "languages" and value == "go":
+        pattern = r"\b(?:go|golang)\b|고랭"
+    for clause in re.split(r";|[.!?](?=\s|$)|[。；]", excerpt):
+        if not _positive_clause(clause):
+            continue
+        for match in re.finditer(pattern, clause, re.I | re.ASCII):
+            before, after = clause[:match.start()], clause[match.end():]
+            # 예제나 조건부 조언, 읽는 파일 및 구현 의존성은 프로젝트 지원 대상이 아니다.
+            if re.search(r"\b(?:if|when|unless|examples?|tutorials?|reads?|uses?|parses?|renders?|helpers?|components?|implementation|internally|docs?|documentation|references?|such as)\b|예시|예제|경우|파일을?\s*읽", before, re.I):
+                continue
+            prefix = re.sub(r"^[\s#*\-]+", "", before)
+            direct = re.search(r"^(?:(?:this|the)\s+)?(?:(?:skill|tool|agent|plugin|extension)\s+)?"
+                r"(?:(?:supports?|targets?|works?\s+with|(?:is\s+)?designed\s+for)\s+|"
+                r"(?:supported|target)\s+(?:languages?|frameworks?|tools?|platforms?)\s*:\s*)[^:;]{0,100}$", prefix, re.I)
+            only = (re.search(r"^(?:for\s+)?[^:;]{0,60}$", prefix, re.I)
+                and re.match(r"(?:\s+|-)only\b(?!\s+(?:examples?|helpers?|components?|implementation|runtime)\b)", after, re.I))
+            korean = re.search(r"(?:지원\s*(?:언어|프레임워크|도구)|대상\s*(?:언어|프레임워크|도구))\s*:\s*[^:;]{0,60}$", prefix)
+            korean = korean or re.match(r"(?:\s|및|와|과|[,/]|[A-Za-z0-9_.+#-]){0,60}(?:만\s*)?전용", after)
+            korean = korean or (re.search(r"스킬|도구|플러그인", clause)
+                and re.match(r"[^;:]{0,40}(?:지원|대상)", after))
+            requires = dimension == "tools" and re.search(r"^(?:(?:this|the)\s+)?"
+                r"(?:(?:skill|tool|agent|plugin)\s+)?requires?\s+[^:;]{0,60}$", prefix, re.I)
+            if direct or only or korean or requires:
+                return True
+    return False
+
+
 def _excerpt(line: str, pattern: re.Pattern) -> str:
     """근거 기술명이 보이도록 원문 일부를 최대 240자로 자른다."""
     match = pattern.search(line)
@@ -179,10 +216,18 @@ def _excerpt(line: str, pattern: re.Pattern) -> str:
     return line[start:start + 240]
 
 
+def _target_excerpt(line, clause, pattern):
+    """같은 줄의 약한 첫 언급 대신 실제 선언 절과 지원 동사를 보존한다."""
+    offset = line.find(clause)
+    return line[offset:offset + 240] if offset >= 0 else _excerpt(line, pattern)
+
+
 def extract_dimensions(files: dict[str, bytes]) -> dict:
     """대표 문서의 명시적 기술과 지원 영역 및 첫 번째 긍정 근거를 반환한다."""
     result = {dimension: [] for dimension in RULES}
     result["evidence"] = []
+    result["target_evidence"] = []
+    target_values = set()
     primary = _primary_document(files)
     if primary is None:
         return result
@@ -228,11 +273,19 @@ def extract_dimensions(files: dict[str, bytes]) -> dict:
                 continue
             for dimension, values in COMPILED_RULES.items():
                 for value, pattern in values.items():
-                    if value not in result[dimension] and pattern.search(clause):
+                    if not pattern.search(clause):
+                        continue
+                    if value not in result[dimension]:
                         result[dimension].append(value)
                         result["evidence"].append({"dimension": dimension, "value": value,
                             "path": path, "line": number,
                             "excerpt": _excerpt(original_lines[number - 1], pattern)})
+                    if ((dimension, value) not in target_values and len(result["target_evidence"]) < 120
+                            and declares_target(dimension, value, clause)):
+                        result["target_evidence"].append({"dimension": dimension, "value": value,
+                            "path": path, "line": number,
+                            "excerpt": _target_excerpt(original_lines[number - 1], clause, pattern)})
+                        target_values.add((dimension, value))
     for dimension in RULES:
         result[dimension].sort()
     return result

@@ -23,7 +23,8 @@ def test_recommendations_follow_task_and_keep_user_decisions(database):
         assert response.status_code == 200
         items = response.json()["items"]
         assert len(items) == 5
-        assert all(item["score"] == 70 and item["work_method_id"] for item in items)
+        assert all(item["work_method_id"] and item["assessment"]["matches"]["goals"] == ["input_validation"]
+                   and "goal_fit" in item["assessment"]["breakdown"] for item in items)
         assert all(item["latest_comparison"] is None and item["performance_status"] == "not_compared" for item in items)
         assert all(item["support_level"] == "information_only" and item["demo"] for item in items)
         rec_id = items[0]["recommendation_id"]

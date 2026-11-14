@@ -62,3 +62,40 @@ def test_skill_manifest_takes_priority_over_readme_and_catalog_links():
     catalog = b"[A](skills/a)\n[B](skills/b)\n[C](skills/c)\nUse test-driven development for changes."
     assert classify_bundle({"README.md": catalog})["task_types"] == []
     assert classify_bundle({"README.md": b"A tool for code review.\n[Docs](docs)\n[Help](help)"})["task_types"] == ["code_review"]
+
+
+def test_real_tdd_heading_has_supported_task_and_test_design_evidence():
+    """실제 공개 스킬에서 사용한 TDD 표제를 작업과 설계 기능에 함께 연결한다."""
+    text = ("---\nname: test-driven-development\ndescription: Use before implementation.\n---\n"
+            "# Test-Driven Development (TDD)\nWrite the test first. Watch it fail.")
+    tags = classify_bundle({"SKILL.md": text.encode()})
+    assert tags["task_types"] == ["test_generation"]
+    assert tags["capabilities"] == ["test_design"]
+    assert tags["dimensions"]["languages"] == []
+    assert tags["dimensions"]["tools"] == []
+    assert next(item for item in tags["evidence"] if item["tag"] == "test_design")["line"] == 5
+
+
+def test_long_description_keeps_bounded_evidence_instead_of_losing_supported_task():
+    """500자를 넘는 실제 문서형 설명도 긍정 작업 주변의 짧은 근거로 보존한다."""
+    description = "Useful context. " * 45 + "Generate tests before changing implementation."
+    text = "---\nname: tests\ndescription: " + description + "\n---"
+    tags = classify_bundle({"SKILL.md": text.encode()})
+    assert tags["task_types"] == ["test_generation"]
+    evidence = next(item for item in tags["evidence"] if item["category"] == "task_types")
+    assert evidence["line"] == 3 and "Generate tests" in evidence["excerpt"]
+    assert len(evidence["excerpt"]) <= 240
+    assert evidence["excerpt"] in text.splitlines()[2]
+
+
+@pytest.mark.parametrize("text", [
+    "# Roadmap\nTest-first development for new features.",
+    "# Unsupported\nTest-driven development.",
+    "No code review, test generation or test-first development.",
+    "We will support test-first development.",
+    "---\nname: test-first\ndescription: No testing support.\n---",
+    "Context. " * 70 + "You don't review or fix the code yourself.",
+])
+def test_new_testing_vocabulary_does_not_turn_non_support_into_tasks(text):
+    """동의어와 긴 설명 처리도 계획과 부정 및 오케스트레이션을 작업으로 만들지 않는다."""
+    assert classify_bundle({"SKILL.md": text.encode()})["task_types"] == []

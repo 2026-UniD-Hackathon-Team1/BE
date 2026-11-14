@@ -30,7 +30,7 @@ def test_dates_unknown_and_private_metadata_are_not_guessed():
 def test_collected_metadata_scopes_and_content_stability(database):
     """원본 선언을 상세와 추천에 연결하고 시각 갱신이 콘텐츠 중복을 만들지 않는다."""
     remote = FakeGithub()
-    remote.files["skills/review/SKILL.md"] = b"---\nname: review\nlicense: Apache-2.0\n---\nReview code."
+    remote.files["skills/review/SKILL.md"] = b"---\nname: review\nlicense: Apache-2.0\n---\nReview code with input validation."
 
     def handle(request):
         """저장소 API의 명시적 사실과 개인 이메일 포함 커밋 응답을 제공한다."""
@@ -67,7 +67,8 @@ def test_collected_metadata_scopes_and_content_stability(database):
         assert facts["publisher"] == "publisher" and facts["publisher_url"] == "https://github.com/publisher"
         assert facts["repository_license"] == "MIT" and facts["metadata_observed_at"]
         assert skill["published_at"] is None
-        api.put("/api/profile", headers=headers, json={"role": "dev", "primary_language": "python", "task_types": ["code_review"]})
+        api.put("/api/profile", headers=headers, json={"role": "dev", "primary_language": "python",
+            "task_types": ["code_review"], "goals": ["input_validation"]})
         cards = api.get("/api/recommendations", headers=headers).json()["items"]
         assert next(card for card in cards if card["candidate_version_id"] == versions["skill"])["source_metadata"] == facts
 
