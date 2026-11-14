@@ -1,5 +1,8 @@
 """리디렉션 없이 인증된 서버와만 통신하는 연결 프로그램 HTTP 클라이언트."""
 import json
+import asyncio
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 import re
@@ -20,6 +23,24 @@ class APIError(AgentError):
         elif status is not None:
             message = f"서버 요청에 실패했습니다(HTTP {status})."
         super().__init__(message)
+
+
+def codex_status():
+    """Check local CLI availability and login without sending credentials."""
+    executable = shutil.which("codex")
+    if executable is None:
+        return None, False
+    try:
+        version = subprocess.run([executable, "--version"], capture_output=True,
+            text=True, timeout=3, check=False)
+        if version.returncode != 0:
+            return None, False
+        label = version.stdout.strip()[:80]
+        login = subprocess.run([executable, "login", "status"], capture_output=True,
+            text=True, timeout=3, check=False)
+        return label or None, bool(label and login.returncode == 0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, False
 
 
 @dataclass(frozen=True)
@@ -88,8 +109,9 @@ class AgentClient:
         return value["agent_token"]
 
     async def heartbeat(self):
-        """아직 검증하지 않은 Codex 준비 상태를 완료로 주장하지 않고 생존을 보고한다."""
-        await self.request("POST", "/api/agent/heartbeat", {"codex_version": None, "codex_ready": False})
+        """Codex 설치·로그인 확인 결과만 서버에 보고한다."""
+        version, ready = await asyncio.to_thread(codex_status)
+        await self.request("POST", "/api/agent/heartbeat", {"codex_version": version, "codex_ready": ready})
 
     async def claim(self):
         """빈 큐는 None으로 반환하고 작업 응답은 검증한 뒤 전달한다."""

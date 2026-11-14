@@ -1,7 +1,8 @@
 # B → FE 비교 결과 계약
 
-현재 구현 기준이다. 타입 원본은 `/openapi.json`의 `ComparisonDetail`이며,
-연결 프로그램을 통한 실행·입력 등록과 스킬 적용 API는 아직 포함하지 않는다.
+현재 구현 기준이다. 타입 원본은 `/openapi.json`의 `ComparisonDetail`이다.
+연결 프로그램의 입력 등록·비교 실행 흐름은 [agent-comparison-contract.md](agent-comparison-contract.md),
+스킬 적용은 [apply-contract.md](apply-contract.md)를 참고한다.
 
 ## 결과 조회
 
@@ -77,7 +78,7 @@
 
 - 현재 `POST /api/comparisons`는 등록된 입력 1~3개를 받으며 `code_review`만 실행한다.
 - `GET /api/inputs/suggestions`는 현재 코드 리뷰 fixture 1개만 제안한다.
-- Railway에서 PC의 Codex 실행·파일 적용을 하려면 별도 연결 프로그램 연동이 필요하다.
-  연결 프로그램이 오기 전에는 적용 완료 화면을 실제 결과로 표시하지 않는다.
+- 연결 프로그램이 켜져 있고 Codex 설치·로그인이 확인돼야 PC 비교 작업을 시작할 수 있다.
+- 실제 PC와 배포 Railway 사이의 전체 왕복은 아직 검증하지 않았다.
 - 모든 개인 API에는 `X-Local-Token`이 필요하다. 오류는
   `{"error": {"code": "...", "message": "..."}}` 형식이다.

@@ -10,15 +10,17 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from backend.models import Asset, AssetVersion, CandidateAdapter, Comparison, Environment, EventLog, Run, WorkMethod, utc_now
 from backend.runtime.comparison import execute_comparison
 from backend.input_store import register_input, load_input
 from backend.comparison_contract import ComparisonDetail
-from backend.agent_jobs import JobSpec, enqueue_job, read_job
-from backend.models import AgentJob
+from backend.agent_jobs import JobSpec, enqueue_job, enqueue_locked_job, read_job
+from backend.models import AgentDevice, AgentJob
 from backend.environment_data import current_environment
+from backend.agent_comparison import input_manifest as agent_input_manifest, sync_agent_comparison
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "experiments" / "skill_eval" / "fixture"
@@ -209,28 +211,58 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
                 raise HTTPException(409, detail={"code": "candidate_version_changed", "message": "승인된 후보 버전과 현재 버전이 다릅니다."})
             if len(set(body.input_ids)) != len(body.input_ids) or body.task_type != "code_review" or body.task_type != method.task_type or not body.confirmed_upload_scope:
                 raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "비교 입력을 확인해 주세요."})
-            try:
-                manifests = [load_input(input_id, ROOT / "runtime" / "inputs", profile_id=profile_id) for input_id in body.input_ids]
-            except (ValueError, OSError):
-                raise HTTPException(422, detail={"code": "invalid_input_id", "message": "등록된 비교 입력을 다시 선택해 주세요."}) from None
-            if any(manifest.get("task_type") != body.task_type for manifest in manifests):
-                raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "입력의 작업 유형이 비교 유형과 다릅니다."})
             environment = current_environment(session, profile_id)
-            if environment is None or not version.artifact_path:
+            if environment is None:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "실행 환경과 후보 파일을 확인해 주세요."})
             if environment.device_id is not None:
-                raise HTTPException(409, detail={"code": "AGENT_COMPARISON_NOT_READY", "message": "연결 프로그램의 비교 실행 기능을 준비 중입니다."})
+                device = session.get(AgentDevice, environment.device_id)
+                if device is None or device.codex_version != environment.runner_version:
+                    raise HTTPException(409, detail={"code": "runner_version_changed", "message": "Codex 버전이 달라졌습니다. PC 환경을 다시 확인해 주세요."})
+                manifests = [agent_input_manifest(session, profile_id, environment.device_id, input_id)
+                    for input_id in body.input_ids]
+            else:
+                try:
+                    manifests = [load_input(input_id, ROOT / "runtime" / "inputs", profile_id=profile_id) for input_id in body.input_ids]
+                except (ValueError, OSError):
+                    raise HTTPException(422, detail={"code": "invalid_input_id", "message": "등록된 비교 입력을 다시 선택해 주세요."}) from None
+            if any(manifest.get("task_type") != body.task_type for manifest in manifests):
+                raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "입력의 작업 유형이 비교 유형과 다릅니다."})
+            if environment.device_id is None and not version.artifact_path:
+                raise HTTPException(409, detail={"code": "environment_not_ready", "message": "실행 환경과 후보 파일을 확인해 주세요."})
             comparison_id = "cmp_" + uuid4().hex
+            plan = {"idempotency_key": body.idempotency_key, "model_id": environment.model_id,
+                "runner_version": environment.runner_version, "timeout_seconds": 180}
+            if environment.device_id is not None:
+                plan["agent_device_id"] = environment.device_id
             session.add(Comparison(id=comparison_id, profile_id=profile_id, method_id=method.id,
                 method_version=method.version, candidate_version_id=version.id,
                 input_manifest=manifests,
-                input_sha256=input_fingerprint(manifests), plan={"idempotency_key": body.idempotency_key,
-                "model_id": environment.model_id, "runner_version": environment.runner_version,
-                "timeout_seconds": 180}, status="queued"))
+                input_sha256=input_fingerprint(manifests), plan=plan, status="queued"))
             for arm in ("baseline", "candidate"):
                 session.add(Run(id="run_" + uuid4().hex, comparison_id=comparison_id, arm=arm,
                     status="queued", result_json={"inputs": []}, metrics_json={"inputs": []},
                     skill_usage_status="not_expected" if arm == "baseline" else "unconfirmed"))
+            if environment.device_id is not None:
+                bundle = version.metadata_json.get("bundle")
+                if not isinstance(bundle, dict) or not isinstance(bundle.get("files"), dict) or "SKILL.md" not in bundle["files"]:
+                    raise HTTPException(409, detail={"code": "candidate_bundle_missing", "message": "비교할 스킬 원본 파일을 확인해 주세요."})
+                digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, ensure_ascii=True,
+                    separators=(",", ":")).encode()).hexdigest()
+                if digest != adapter.approved_bundle_sha256:
+                    raise HTTPException(409, detail={"code": "candidate_version_changed", "message": "승인된 후보 파일이 변경됐습니다."})
+                asset = session.get(Asset, version.asset_id)
+                name = adapter.runtime.get("skill_name") or asset.canonical_key.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+                payload = {"schema_version": 1, "comparison_id": comparison_id, "inputs": manifests,
+                    "input_sha256": input_fingerprint(manifests),
+                    "model_id": environment.model_id, "runner_version": environment.runner_version,
+                    "method_prompt": method.prompt_text, "candidate_bundle": bundle,
+                    "candidate_sha256": adapter.approved_bundle_sha256, "skill_name": name}
+                try:
+                    spec = JobSpec(kind="run_comparison", request_key="comparison:" + comparison_id, payload=payload)
+                except ValidationError:
+                    raise HTTPException(413, detail={"code": "comparison_payload_too_large", "message": "비교할 스킬 파일이 크기 제한을 초과했습니다."}) from None
+                enqueue_locked_job(session, profile_id, spec, device_id=environment.device_id)
+                return {"comparison_id": comparison_id, "status": "queued"}
             job = (comparison_id, method.prompt_text, version.artifact_path,
                    adapter.approved_bundle_sha256, environment.model_id, environment.runner_version)
         background.add_task(run_job, *job)
@@ -238,10 +270,11 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
 
     @router.get("/api/comparisons/{comparison_id}", response_model=ComparisonDetail)
     def detail(comparison_id: str, profile_id: str = Depends(auth)):
-        with sessions() as session:
+        with sessions.begin() as session:
             comparison = session.get(Comparison, comparison_id)
             if comparison is None or comparison.profile_id != profile_id:
                 raise HTTPException(404, detail={"code": "comparison_not_found", "message": "비교 결과를 찾을 수 없습니다."})
+            sync_agent_comparison(session, comparison)
             runs = list(session.scalars(select(Run).where(Run.comparison_id == comparison_id)))
             version = session.get(AssetVersion, comparison.candidate_version_id)
             asset = session.get(Asset, version.asset_id)
@@ -283,6 +316,16 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
                 raise HTTPException(404, detail={"code": "comparison_not_found", "message": "비교 작업을 찾을 수 없습니다."})
             if comparison.status != "queued":
                 raise HTTPException(409, detail={"code": "comparison_not_cancellable", "message": "이미 실행 중이거나 종료된 작업입니다."})
+            if "agent_device_id" in comparison.plan:
+                job = session.scalar(select(AgentJob).where(AgentJob.profile_id == profile_id,
+                    AgentJob.request_key == "comparison:" + comparison_id).with_for_update())
+                if job is None or job.status != "queued":
+                    raise HTTPException(409, detail={"code": "comparison_not_cancellable", "message": "이미 실행 중이거나 종료된 작업입니다."})
+                job.status = "cancelled"
+                job.updated_at = utc_now()
+                job.finished_at = utc_now()
+                for run in session.scalars(select(Run).where(Run.comparison_id == comparison_id)):
+                    run.status = "cancelled"
             comparison.status = "cancelled"
         return {"status": "cancelled"}
 
@@ -294,6 +337,7 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
             comparison = session.get(Comparison, comparison_id)
             if comparison is None or comparison.profile_id != profile_id:
                 raise HTTPException(404, detail={"code": "comparison_not_found", "message": "비교 결과를 찾을 수 없습니다."})
+            sync_agent_comparison(session, comparison)
             if comparison.status != "done":
                 raise HTTPException(409, detail={"code": "comparison_not_done", "message": "완료된 비교에서만 선택할 수 있습니다."})
             previous = comparison.user_decision
