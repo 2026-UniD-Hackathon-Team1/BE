@@ -1,7 +1,7 @@
 """프론트와 공유하는 요청 및 응답 계약."""
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ErrorDetail(BaseModel):
@@ -51,3 +51,34 @@ class SourceSummary(BaseModel):
 
 class SourceList(BaseModel):
     items: list[SourceSummary]
+
+
+TaskType = Literal["code_review", "test_generation"]
+Goal = Literal["input_validation", "exception_handling", "regression_test", "test_coverage", "documentation"]
+
+
+class ProfileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    role: str = Field(min_length=1, max_length=100, examples=["백엔드 개발"])
+    primary_language: str = Field(min_length=1, max_length=40, examples=["python"])
+    task_types: list[TaskType] = Field(min_length=1, max_length=2, examples=[["code_review"]])
+    goals: list[Goal] = Field(default_factory=list, max_length=5)
+    preferences: dict[str, bool | str | int | float] = Field(default_factory=dict, max_length=20)
+
+    @field_validator("task_types", "goals")
+    @classmethod
+    def unique_tags(cls, values):
+        """사용자가 중복 입력한 작업 및 목표 태그를 순서대로 정리한다."""
+        return list(dict.fromkeys(values))
+
+
+class ProfileResponse(ProfileInput):
+    profile_id: str
+    profile_version: int
+    updated_at: str
+
+
+class ProfileSaved(BaseModel):
+    profile_id: str
+    profile_version: int
+    recommendations_stale: bool
