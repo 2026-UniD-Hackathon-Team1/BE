@@ -145,6 +145,8 @@ def test_reviewed_adapter_does_not_imply_ready_or_audited_environment(candidate)
     assert item["support_level"] == "comparable" and item["adapter_id"] == "adapter-real"
     assert item["compatibility"] == "unknown" and item["security_audit_status"] == "unverified"
     assert item["permissions"]["allowed"] == {"file_read": True}
+    listed = client.get("/api/catalog/candidates").json()["items"]
+    assert next(value for value in listed if value["candidate_version_id"] == "ver-real")["support_level"] == "comparable"
     with sessions.begin() as session:
         session.add(AgentDevice(id="device-real", profile_id="local", token_hash="fixture-hash", device_name="fixture",
             agent_version="test", is_primary=True, codex_version="test-version", codex_ready=True, last_seen_at=utc_now()))

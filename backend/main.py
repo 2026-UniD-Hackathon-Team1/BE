@@ -20,7 +20,7 @@ from backend.environment import environment_router
 from backend.candidates import candidate_router
 from backend.catalog.jobs import catalog_router
 from backend.catalog.refresh import refresh_router
-from backend.models import Asset, AssetVersion, ChangeEvent, Source
+from backend.models import Asset, AssetVersion, CandidateAdapter, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.recommendations import recommendation_router
 from backend.work_methods import work_method_router
@@ -39,11 +39,18 @@ def candidate_rows(session):
             row[3].sync_state.get("current_versions", {}).get(row[0].id) == row[1].id]
 
 
-def serialize_candidate(asset, version, change, source):
-    """공개 목록에는 출처와 버전만 제공하며 원본 번들과 로컬 경로는 노출하지 않는다."""
+def serialize_candidate(session, asset, version, change, source):
+    """공개 목록에는 검증된 승인 수준을 표시하고 원본 번들과 로컬 경로는 노출하지 않는다."""
+    adapters = session.scalars(select(CandidateAdapter).where(
+        CandidateAdapter.asset_version_id == version.id)).all()
+    approved = [item for item in adapters if item.reviewed
+        and item.approved_bundle_sha256 == version.bundle_sha256
+        and item.support_level in {"comparable", "applicable"}]
+    support_level = approved[0].support_level if len(approved) == 1 else "information_only"
     return CandidateSummary(candidate_version_id=version.id, asset_id=asset.id, kind=asset.kind,
         title=asset.display_name, revision=version.revision, bundle_sha256=version.bundle_sha256,
         source_url=change.source_url, first_seen_at=change.first_seen_at,
+        support_level=support_level,
         classification_status=version.metadata_json.get("classification_status", "demo"),
         tag_evidence=version.tags.get("evidence", []),
         demo=bool(version.metadata_json.get("demo", False)))
@@ -130,7 +137,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
             rows = candidate_rows(session)
             if kind:
                 rows = [row for row in rows if row[0].kind == kind]
-            return CandidateList(items=[serialize_candidate(*row) for row in rows[offset:offset + limit]],
+            return CandidateList(items=[serialize_candidate(session, *row) for row in rows[offset:offset + limit]],
                                  total=len(rows), limit=limit, offset=offset)
 
     @app.get("/api/catalog/sources", response_model=SourceList, tags=["catalog"], summary="수집 소스 상태 목록")
