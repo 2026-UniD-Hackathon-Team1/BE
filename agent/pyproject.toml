@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "galtalka-agent"
+version = "0.1.0"
+description = "Local connection agent for Galtalka"
+requires-python = ">=3.11"
+dependencies = ["httpx==0.28.1"]
+
+[project.scripts]
+galtalka = "galtalka_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
