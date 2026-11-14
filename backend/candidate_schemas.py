@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from backend.schemas import TagEvidence
-from backend.catalog.schemas import SourceMetadata
+from backend.catalog.schemas import SourceMetadata, CandidateRequirements
 
 
 class PermissionEvidence(BaseModel):
@@ -33,6 +33,7 @@ class Maintainer(BaseModel):
 
 
 class CandidateDetail(BaseModel):
+    requirements: CandidateRequirements = Field(default_factory=CandidateRequirements)
     candidate_version_id: str
     asset_id: str
     kind: str

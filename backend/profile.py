@@ -29,6 +29,9 @@ def profile_router(sessions, auth):
         values["context_json"] = values.pop("context")
         with sessions.begin() as session:
             profile = session.get(Profile, profile_id)
+            if profile is not None and "context" not in body.model_fields_set:
+                # 기존 프론트가 새 선택 필드를 보내지 않아도 등록한 기술 맥락을 지우지 않는다.
+                values["context_json"] = profile.context_json
             changed = profile is None or any(getattr(profile, key) != value for key, value in values.items())
             if profile is None:
                 profile = Profile(id=profile_id, **values)

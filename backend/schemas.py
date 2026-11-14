@@ -2,7 +2,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from backend.catalog.schemas import SourceMetadata
+from backend.catalog.schemas import SourceMetadata, CandidateRequirements
 
 
 class ErrorDetail(BaseModel):
@@ -111,7 +111,8 @@ class ProfileInput(BaseModel):
     task_types: list[TaskType] = Field(min_length=1, max_length=2, examples=[["code_review"]])
     goals: list[Goal] = Field(default_factory=list, max_length=12)
     preferences: dict[str, bool | str | int | float] = Field(default_factory=dict, max_length=20)
-    context: ProfileContext = Field(default_factory=ProfileContext)
+    context: ProfileContext = Field(default_factory=ProfileContext,
+        description="기존 프로필에서 생략하면 기술 맥락을 보존합니다. 빈 객체를 명시하면 기본 상태로 초기화합니다.")
 
     @field_validator("task_types", "goals")
     @classmethod
@@ -243,6 +244,10 @@ class RecommendationAssessment(BaseModel):
 
 class RecommendationCard(BaseModel):
     source_metadata: SourceMetadata = Field(default_factory=SourceMetadata)
+    requirements: CandidateRequirements = Field(default_factory=CandidateRequirements)
+    alternative_group: str = Field(default="", description="같은 스킬의 미러나 완전히 같은 번들을 묶은 대안 식별자입니다.")
+    variant_count: int = Field(default=1, ge=1, description="하나의 추천으로 묶은 배포 경로 수이며 서로 다른 대안 수가 아닙니다.")
+    variant_version_ids: list[str] = Field(default_factory=list)
     recommendation_id: str
     candidate_version_id: str
     adapter_id: str | None

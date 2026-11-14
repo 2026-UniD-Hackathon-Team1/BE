@@ -5,6 +5,8 @@ from sqlalchemy import select
 from backend.catalog.service import stable_id
 from backend.catalog.metadata import public_facts
 from backend.catalog.eligibility import repository_fixture
+from backend.catalog.requirements import declared_requirements
+from backend.catalog.families import candidate_family
 from backend.candidates import safe_evidence, compatibility as candidate_compatibility
 from backend.environment_data import current_environment
 from backend.catalog.inspection import inspect_bundle, public_url, verified_source
@@ -15,6 +17,56 @@ from backend.schemas import (ErrorResponse, LatestComparison, RecommendationActi
                              RecommendationCard, RecommendationList)
 from backend.personalization import build_context, rank_candidate
 from backend.recommendation_state import known_applied_versions
+
+
+def distinct_alternatives(rows, context):
+    """같은 스킬의 배포 미러와 동일 번들을 한 대안으로 묶고 맥락에 맞는 경로를 고른다."""
+    parents = list(range(len(rows)))
+
+    def root(index):
+        """중복 관계의 대표 위치를 경로 압축으로 찾는다."""
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    seen = {}
+    for index, row in enumerate(rows):
+        family = candidate_family(row[1], row[2])
+        row[7]["matches"]["alternative_group"] = family["family_key"]
+        keys = ["family:" + family["family_key"]]
+        if family["bundle_sha256"]:
+            keys.append("bundle:" + family["bundle_sha256"])
+        for key in keys:
+            if key in seen:
+                parents[root(index)] = root(seen[key])
+            seen[key] = index
+    groups = {}
+    for index, row in enumerate(rows):
+        groups.setdefault(root(index), []).append((index, row))
+    current = set(context["effective"]["tools"]) & {"codex_cli", "claude_code", "cursor", "github_copilot"}
+    result, duplicates = [], []
+    for members in groups.values():
+        def preference(member):
+            """같은 기능이면 현재 도구와 충돌하지 않는 경로와 높은 관련성을 먼저 고른다."""
+            index, row = member
+            tags = row[2].tags
+            tools = set(tags.get("supported_tools", [])) & {"codex_cli", "claude_code", "cursor", "github_copilot"}
+            return (bool(current and tools and not current & tools), -row[0], index)
+
+        _, selected = min(members, key=preference)
+        variants = sorted(row[2].id for _, row in members)
+        selected[7]["matches"]["variant_version_ids"] = variants
+        selected[7]["matches"]["variant_count"] = len(variants)
+        if len(variants) > 1:
+            selected[6].append(f"같은 스킬의 {len(variants)}개 배포 경로를 하나의 추천 대안으로 표시함")
+        result.append(selected)
+        duplicates.extend({"candidate_version_id": row[2].id, "title": row[1].display_name,
+            "excluded_reasons": ["동일 스킬의 다른 배포 경로 또는 동일한 전체 번들이므로 대안 수에 중복 집계하지 않음"]}
+            for _, row in members if row is not selected)
+    order = {id(row): index for index, row in enumerate(rows)}
+    result.sort(key=lambda row: order[id(row)])
+    return result, duplicates
 
 
 def assess_candidates(session, profile):
@@ -61,6 +113,8 @@ def assess_candidates(session, profile):
     matched.sort(key=lambda row: row[1].id)
     matched.sort(key=lambda row: row[3].first_seen_at, reverse=True)
     matched.sort(key=lambda row: row[0], reverse=True)
+    matched, duplicates = distinct_alternatives(matched, context)
+    excluded.extend(duplicates)
     return matched, excluded, context
 
 
@@ -124,14 +178,23 @@ def recommendation_router(sessions, auth):
                     recommendation.score = score
                     recommendation.reasons = reasons
                     recommendation.updated_at = utc_now()
-                decision = session.get(RecommendationDecision, recommendation_id)
+                variants = assessment["matches"].get("variant_version_ids", [version.id])
+                decision = session.scalar(select(RecommendationDecision)
+                    .join(Recommendation, Recommendation.id == RecommendationDecision.recommendation_id)
+                    .join(ChangeEvent, ChangeEvent.id == Recommendation.change_id)
+                    .join(AssetVersion, AssetVersion.id == ChangeEvent.to_version_id)
+                    .where(RecommendationDecision.profile_id == profile_id,
+                           Recommendation.profile_id == profile_id,
+                           ChangeEvent.to_version_id.in_(variants), AssetVersion.revision == version.revision)
+                    .order_by(RecommendationDecision.updated_at.desc(), RecommendationDecision.recommendation_id).limit(1))
                 status = decision.status if decision else "new"
                 if status != "new" and not include_hidden:
                     continue
                 adapter = approved_adapter(session, version, task)
                 environment = current_environment(session, profile_id)
                 comparable = bool(adapter and method and environment and adapter.runner == environment.runner
-                                  and task == "code_review" and task in adapter.supported_tasks and (
+                                  and task == "code_review" and task in version.tags.get("task_types", [])
+                                  and task in adapter.supported_tasks and (
                                       environment.device_id is None and version.artifact_path or
                                       environment.device_id is not None and
                                       candidate_compatibility(session, profile_id, adapter)[0] == "confirmed"))
@@ -140,6 +203,10 @@ def recommendation_router(sessions, auth):
                     .order_by(Comparison.created_at.desc()))
                 metadata_source = session.get(Source, asset.source_id)
                 items.append(RecommendationCard(recommendation_id=recommendation_id,
+                    alternative_group=assessment["matches"]["alternative_group"],
+                    variant_count=assessment["matches"]["variant_count"],
+                    variant_version_ids=assessment["matches"]["variant_version_ids"],
+                    requirements=declared_requirements(version.metadata_json, version.bundle_sha256),
                     source_metadata=public_facts(version.metadata_json, verified_source(version.metadata_json,
                         version.revision, metadata_source.kind, change.source_url, metadata_source.url)),
                     candidate_version_id=version.id, adapter_id=adapter.id if comparable else None,

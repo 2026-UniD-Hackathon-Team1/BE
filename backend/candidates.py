@@ -10,6 +10,7 @@ from backend.candidate_schemas import CandidateDetail, Maintainer, SourceMetadat
 from backend.catalog.metadata import manifest_license, public_facts
 from backend.catalog.inspection import PERMISSION_LABELS, inspect_bundle, public_url, verified_source
 from backend.catalog.eligibility import repository_fixture
+from backend.catalog.requirements import declared_requirements
 from backend.models import (AgentDevice, Asset, AssetVersion, CandidateAdapter, ChangeEvent,
                             Environment, Recommendation, Source)
 from backend.schemas import ErrorResponse, TagEvidence
@@ -130,6 +131,7 @@ def candidate_detail(session, version, profile_id):
         .where(Recommendation.profile_id == profile_id, ChangeEvent.to_version_id == version.id)
         .order_by(Recommendation.updated_at.desc()).limit(1))
     return CandidateDetail(candidate_version_id=version.id, asset_id=asset.id, kind=asset.kind,
+        requirements=declared_requirements(metadata, version.bundle_sha256),
         title=asset.display_name, summary=short_text(repository.get("description")), revision=version.revision,
         bundle_sha256=version.bundle_sha256, source_url=source_url,
         published_at=change.published_at if change else None, first_seen_at=change.first_seen_at if change else None,

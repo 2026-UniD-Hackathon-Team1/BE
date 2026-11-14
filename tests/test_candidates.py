@@ -157,6 +157,32 @@ def test_repository_test_data_is_excluded_even_with_reviewed_adapter(candidate):
     assert "테스트 데이터" in result["excluded"][0]["excluded_reasons"][0]
 
 
+def test_mirrored_skill_is_one_alternative_and_hide_choice_is_preserved(candidate):
+    """같은 번들의 배포 미러를 추천 두 개로 세지 않고 사용자 숨김을 유지한다."""
+    client, sessions = candidate
+    with sessions.begin() as session:
+        original = session.get(AssetVersion, "ver-real")
+        session.add(Asset(id="asset-mirror", kind="skill", canonical_key="github:example/review:plugins/review",
+            display_name="Review plugin mirror", source_id="github:example/review"))
+        session.flush()
+        session.add(AssetVersion(id="ver-mirror", asset_id="asset-mirror", revision=original.revision,
+            bundle_sha256=original.bundle_sha256, metadata_json=original.metadata_json, tags=original.tags))
+        session.flush()
+        session.add(ChangeEvent(id="change-mirror", asset_id="asset-mirror", to_version_id="ver-mirror",
+            change_type="new", source_url=original.metadata_json["source_url"]))
+        source = session.get(Source, "github:example/review")
+        source.sync_state = {"current_versions": {"asset-real": "ver-real", "asset-mirror": "ver-mirror"}}
+    items = client.get("/api/recommendations", headers=HEADERS).json()["items"]
+    assert len(items) == 1 and items[0]["variant_count"] == 2
+    assert set(items[0]["variant_version_ids"]) == {"ver-real", "ver-mirror"}
+    recommendation_id = items[0]["recommendation_id"]
+    assert client.patch("/api/recommendations/" + recommendation_id, headers=HEADERS,
+        json={"status": "dismissed"}).status_code == 204
+    assert client.get("/api/recommendations", headers=HEADERS).json()["items"] == []
+    hidden = client.get("/api/recommendations?include_hidden=true", headers=HEADERS).json()["items"]
+    assert len(hidden) == 1 and hidden[0]["status"] == "dismissed"
+
+
 def test_historical_version_is_not_replaced_by_current_version(candidate):
     """상세 URL의 고정 버전을 유지하고 공개일을 최신 릴리스 날짜로 추측하지 않는다."""
     client, sessions = candidate

@@ -56,3 +56,15 @@ def test_context_migration_preserves_legacy_user_and_method(empty_database):
         assert profile.version == 7 and profile.context_json == {} and profile.task_types == ["code_review"]
         assert method.prompt_text == "preserve me" and method.workflow_json == [] and method.is_active
         assert session.scalar(select(WorkMethod.version)) == 3
+
+
+def test_legacy_profile_update_keeps_context_until_explicit_reset(database):
+    """새 필드를 모르는 기존 프론트의 수정이 등록한 기술과 제약을 잃지 않게 한다."""
+    with TestClient(create_app(database_url=database[2].attributes["database_url"], local_token="test-context-token")) as api:
+        assert api.put("/api/profile", headers=HEADERS, json=PROFILE).status_code == 200
+        before = api.get("/api/profile", headers=HEADERS).json()["context"]
+        legacy = {key: value for key, value in PROFILE.items() if key != "context"}
+        assert api.put("/api/profile", headers=HEADERS, json={**legacy, "goals": ["test_coverage"]}).status_code == 200
+        assert api.get("/api/profile", headers=HEADERS).json()["context"] == before
+        assert api.put("/api/profile", headers=HEADERS, json={**legacy, "context": {}}).status_code == 200
+        assert api.get("/api/profile", headers=HEADERS).json()["context"]["frameworks"] == []
