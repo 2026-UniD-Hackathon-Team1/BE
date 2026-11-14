@@ -103,7 +103,7 @@ def enqueue_job(sessions, profile_id: str, spec: JobSpec, *, reuse_pending=False
     digest = agent.secret_hash(canonical_json({"kind": spec.kind, "payload": spec.payload}))
     with sessions.begin() as session:
         device = session.scalar(select(AgentDevice).where(AgentDevice.profile_id == profile_id,
-            AgentDevice.revoked_at.is_(None)).with_for_update())
+            AgentDevice.revoked_at.is_(None), AgentDevice.is_primary.is_(True)).with_for_update())
         existing = session.scalar(select(AgentJob).where(AgentJob.profile_id == profile_id,
             AgentJob.request_key == spec.request_key))
         if existing is not None:
@@ -187,8 +187,9 @@ def job_router(sessions, web_auth):
             device = agent.authenticated_device(session, credentials)
             now = agent.current_time()
             expire_jobs(session, device.id, now)
-            running = session.scalar(select(AgentJob.id).where(AgentJob.device_id == device.id, AgentJob.status == "running"))
-            if running is not None:
+            running = session.scalar(select(AgentJob.id).where(AgentJob.profile_id == device.profile_id,
+                AgentJob.status == "running"))
+            if running is not None or not device.is_primary:
                 return None
             job = session.scalar(select(AgentJob).where(AgentJob.device_id == device.id, AgentJob.status == "queued")
                 .order_by(AgentJob.created_at, AgentJob.id).with_for_update(skip_locked=True).limit(1))

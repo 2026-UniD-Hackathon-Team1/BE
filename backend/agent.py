@@ -71,6 +71,15 @@ class AgentStatus(BaseModel):
     last_seen_at: str | None = None
 
 
+class AgentDeviceView(AgentStatus):
+    device_id: str
+    is_primary: bool
+
+
+class DeviceList(BaseModel):
+    devices: list[AgentDeviceView]
+
+
 def authenticated_device(session, credentials):
     """기기 행을 잠그고 해제된 토큰의 작업 접근과 상태 갱신을 거부한다."""
     if credentials is not None:
@@ -145,10 +154,11 @@ def agent_router(sessions, web_auth):
                 AgentPairingCode.consumed_at.is_(None), AgentPairingCode.expires_at > now).values(consumed_at=now))
             if consumed.rowcount != 1:
                 raise HTTPException(400, detail={"code": "INVALID_PAIRING_CODE", "message": "연결 코드가 잘못됐거나 만료됐습니다. 새 코드를 발급해 주세요."})
-            revoke_devices(session, profile_id, now)
+            session.execute(update(AgentDevice).where(AgentDevice.profile_id == profile_id,
+                AgentDevice.revoked_at.is_(None)).values(is_primary=False))
             session.add(AgentDevice(id="agent_" + uuid4().hex, profile_id=profile_id,
                 token_hash=secret_hash(token), device_name=body.device_name, agent_version=body.agent_version,
-                codex_ready=False, last_seen_at=now))
+                is_primary=True, codex_ready=False, last_seen_at=now))
         response.headers["Cache-Control"] = "no-store"
         return PairResponse(agent_token=token)
 
@@ -166,6 +176,32 @@ def agent_router(sessions, web_auth):
                 device_name=device.device_name, agent_version=device.agent_version,
                 codex_version=device.codex_version, codex_ready=device.codex_ready if connected else False,
                 last_seen_at=device.last_seen_at)
+
+    @router.get("/devices", response_model=DeviceList, summary="연결된 기기 목록")
+    def devices(response: Response, profile_id: str = Depends(web_auth)):
+        response.headers["Cache-Control"] = "no-store"
+        with sessions() as session:
+            now = iso_time(current_time() - timedelta(seconds=60))
+            return DeviceList(devices=[AgentDeviceView(device_id=item.id, device_name=item.device_name,
+                status="connected" if item.revoked_at is None and item.last_seen_at >= now else "disconnected",
+                agent_version=item.agent_version, codex_version=item.codex_version,
+                codex_ready=item.codex_ready and item.revoked_at is None and item.last_seen_at >= now,
+                last_seen_at=item.last_seen_at, is_primary=item.is_primary)
+                for item in session.scalars(select(AgentDevice).where(AgentDevice.profile_id == profile_id)
+                    .order_by(AgentDevice.is_primary.desc(), AgentDevice.last_seen_at.desc()))])
+
+    @router.put("/devices/{device_id}/primary", status_code=204, summary="작업 기본 기기 지정")
+    def set_primary(device_id: str, profile_id: str = Depends(web_auth)):
+        with sessions.begin() as session:
+            session.scalar(select(Profile).where(Profile.id == profile_id).with_for_update())
+            device = session.scalar(select(AgentDevice).where(AgentDevice.id == device_id,
+                AgentDevice.profile_id == profile_id, AgentDevice.revoked_at.is_(None)).with_for_update())
+            if device is None:
+                raise HTTPException(404, detail={"code": "DEVICE_NOT_FOUND", "message": "연결된 기기를 찾을 수 없습니다."})
+            session.execute(update(AgentDevice).where(AgentDevice.profile_id == profile_id,
+                AgentDevice.revoked_at.is_(None)).values(is_primary=False))
+            device.is_primary = True
+        return Response(status_code=204)
 
     @router.post("/heartbeat", status_code=204, summary="기기 생존 및 Codex 준비 상태 갱신")
     def heartbeat(body: HeartbeatInput,

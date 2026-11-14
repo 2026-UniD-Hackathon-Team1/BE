@@ -72,13 +72,14 @@ class AgentDevice(Base):
     token_hash: Mapped[str] = mapped_column(String, unique=True)
     device_name: Mapped[str] = mapped_column(String)
     agent_version: Mapped[str] = mapped_column(String)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     codex_version: Mapped[str | None] = mapped_column(String)
     codex_ready: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[str] = mapped_column(String)
     revoked_at: Mapped[str | None] = mapped_column(String)
     __table_args__ = (UniqueConstraint("id", "profile_id", name="uq_agent_device_owner"),
-        Index("uq_active_agent_profile", "profile_id", unique=True,
-        postgresql_where=text("revoked_at IS NULL")),)
+        Index("uq_primary_agent_profile", "profile_id", unique=True,
+        postgresql_where=text("revoked_at IS NULL AND is_primary")),)
 
 
 class AgentJob(Base):
@@ -111,6 +112,7 @@ class AgentJob(Base):
         CheckConstraint("attempts >= 0", name="ck_agent_job_attempts"),
         Index("ix_agent_job_device_status", "device_id", "status", "created_at"),
         Index("uq_running_job_device", "device_id", unique=True, postgresql_where=text("status = 'running'")),
+        Index("uq_running_job_profile", "profile_id", unique=True, postgresql_where=text("status = 'running'")),
     )
 
 
