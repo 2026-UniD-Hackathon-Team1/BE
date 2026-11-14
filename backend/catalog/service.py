@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from backend.catalog.config import CollectionConfig, RepositoryConfig, is_fixture_folder
 from backend.catalog.classification import CLASSIFIER_VERSION, classify_bundle
 from backend.catalog.policy import bind_policy
-from backend.catalog.github_client import CollectionError, GithubClient, RepositorySnapshot
+from backend.catalog.github_client import CollectionError, GithubClient, RepositorySnapshot, folder_priority
 from backend.models import Asset, AssetVersion, ChangeEvent, Source, utc_now
 
 STOP_ERRORS = {"rate_limited", "authentication_failed", "forbidden",
@@ -90,7 +90,12 @@ class CatalogCollector:
                 source.sync_state = {**source.sync_state, "batch": state}
             total = len(state["folders"]) + 1
             inspected = 0
-            for index in range(total):
+            unread = [index for index in range(total - 1) if index not in completed]
+            hints = config.folder_hints or state.get("folder_hints", [])
+            if hints and not state.get("scope"):
+                # 원본 목록과 커서는 고정하고 이번에 읽을 미완료 인덱스만 현재 맥락에 맞춰 고른다.
+                unread.sort(key=lambda index: (*folder_priority(state["folders"][index], hints), index))
+            for index in unread + [total - 1]:
                 if index in completed:
                     continue
                 if advanced >= batch_size or inspected >= min(2000, max(20, batch_size * 4)):
@@ -203,6 +208,11 @@ class CatalogCollector:
     def run(self, config: CollectionConfig, *, progress=None):
         """검색으로 발견한 후보와 기존 추적 저장소를 중복 없이 순차 수집한다."""
         repos = {item.repository: item for item in config.repositories}
+        known = set(repos)
+        if config.discovery_queries:
+            with self.sessions() as session:
+                known.update(source_id.removeprefix("github:").lower() for source_id in session.scalars(
+                    select(Source.id).where(Source.kind == "github_repo")))
         if config.resume_pending:
             with self.sessions() as session:
                 for source in session.scalars(select(Source).where(Source.enabled.is_(True),
@@ -219,7 +229,8 @@ class CatalogCollector:
                         item = RepositoryConfig.model_validate(queued)
                         repos.setdefault(item.repository, item)
         discovery_errors = []
-        discovery = [{"query": query, "status": "not_attempted", "repositories": [], "error": None}
+        discovery = [{"query": query, "status": "not_attempted", "repositories": [], "error": None,
+                      "known_repositories_skipped": 0}
                      for query in config.discovery_queries]
         discovery_stopped = False
         def report(items):
@@ -231,15 +242,19 @@ class CatalogCollector:
         for index, query in enumerate(config.discovery_queries):
             try:
                 discovered = self.client.discover(query, config.discovery_limit,
-                    sort=config.discovery_sort.get(query, "updated"), hints=config.discovery_hints)
+                    sort=config.discovery_sort.get(query, "updated"), hints=config.discovery_hints,
+                    exclude_repositories=known)
                 discovery[index] = {"query": query, "status": "done",
-                    "repositories": [item.repository for item in discovered], "error": None}
+                    "repositories": [item.repository for item in discovered], "error": None,
+                    "known_repositories_skipped": self.client.last_discovery_stats["known_skipped"]}
                 for item in discovered:
+                    known.add(item.repository)
                     item = item.model_copy(update={"folder_hints": config.discovery_hints})
                     if item.repository in repos or len(repos) < 20:
                         repos.setdefault(item.repository, item)
             except CollectionError as error:
-                discovery[index] = {"query": query, "status": "failed", "repositories": [], "error": error.code}
+                discovery[index] = {"query": query, "status": "failed", "repositories": [], "error": error.code,
+                    "known_repositories_skipped": 0}
                 discovery_errors.append({"query": query, "error": error.code,
                                          "retry_after": error.retry_after, "reset_at": error.reset_at})
                 if error.code in STOP_ERRORS:

@@ -22,7 +22,7 @@ MAX_RESPONSE_BYTES = 8_000_000
 
 # 폴더명은 읽기 순서를 정할 약한 신호이며 후보의 기능과 호환성 태그에는 쓰지 않는다.
 FOLDER_ALIASES = {
-    "code_review": ("review", "audit", "리뷰", "코드리뷰"),
+    "code_review": ("review", "reviews", "reviewer", "reviewers", "audit", "리뷰", "코드리뷰"),
     "test_generation": ("test", "tests", "testing", "tdd", "테스트"),
     "input_validation": ("validation", "validator", "validate", "입력검증"),
     "exception_handling": ("exception", "exceptions", "error-handling", "예외처리"),
@@ -63,6 +63,25 @@ FOLDER_ALIASES = {
     "github_actions": ("github-actions", "actions"),
     "pytest": ("pytest", "py-test"),
 }
+FOLDER_EXACT_ALIASES = {
+    "code_review": ("code-review", "code-reviewer", "review-code", "review-pr", "pr-review",
+        "pull-request-review", "코드리뷰"),
+    "test_generation": ("test-generation", "test-driven", "tdd", "generate-tests", "write-tests",
+        "unit-testing", "unit-tests", "테스트생성"),
+    "input_validation": ("input-validation", "input-validator", "request-validation", "입력검증"),
+    "exception_handling": ("exception-handling", "error-handling", "예외처리"),
+    "regression_test": ("regression-test", "regression-tests", "regression-testing", "회귀테스트"),
+    "test_coverage": ("test-coverage", "code-coverage", "테스트커버리지"),
+    "documentation": ("documentation", "문서화"),
+    "api_security": ("api-security", "api-authentication", "api-authorization", "security-review",
+        "auth-implementation", "authentication", "authorization", "oauth", "owasp", "appsec"),
+    "accessibility": ("accessibility", "a11y", "wcag", "접근성"),
+    "performance": ("performance", "profiling", "optimization", "성능"),
+    "browser_testing": ("browser-testing", "browser-automation", "e2e-testing", "playwright", "cypress"),
+    "test_design": ("test-design", "testing-strategy", "test-plan", "boundary-testing", "테스트설계"),
+    "database_changes": ("database-migration", "schema-migration", "migrations", "마이그레이션"),
+    "typing": ("type-safety", "type-checking", "type-check", "type-hints", "static-typing", "mypy", "타입검사"),
+}
 
 
 def _folder_words(value):
@@ -71,19 +90,28 @@ def _folder_words(value):
     return " ".join(re.findall(r"[a-z0-9]+(?:\+\+|#)?|[가-힣]+", value.lower()))
 
 
+def folder_priority(folder, hints):
+    """정확한 작업명과 검사명을 일반 단어보다 우선하되 원문 지원 근거로 해석하지 않는다."""
+    words = " " + _folder_words(folder) + " "
+    exact_tasks, exact_capabilities, score = 0, 0, 0
+    for hint in dict.fromkeys(hints):
+        exact = any(" " + _folder_words(alias) + " " in words for alias in FOLDER_EXACT_ALIASES.get(hint, ()))
+        generic = any(" " + _folder_words(alias) + " " in words for alias in FOLDER_ALIASES.get(hint, (hint,)))
+        if exact:
+            if hint in {"code_review", "test_generation"}:
+                exact_tasks += 1
+                score += 16
+            else:
+                exact_capabilities += 1
+                score += 12
+        elif generic:
+            score += 1 if hint in {"code_review", "test_generation"} else 4 if hint in RULES["capabilities"] else 2
+    return -exact_tasks, -exact_capabilities, -score
+
+
 def prioritize_folders(folders, hints):
-    """모든 폴더를 보존하면서 명시한 관심 기술과 이름이 맞는 폴더부터 읽는다."""
-    if not hints:
-        return folders
-    aliases = [tuple(" " + _folder_words(alias) + " "
-                     for alias in FOLDER_ALIASES.get(hint, (hint,))) for hint in hints]
-
-    def priority(folder):
-        """힌트 하나의 여러 별칭은 중복 가점 없이 한 번만 계산한다."""
-        words = " " + _folder_words(folder) + " "
-        return -sum(any(alias in words for alias in names) for names in aliases), folder
-
-    return sorted(folders, key=priority)
+    """모든 폴더를 보존하면서 정확한 작업과 목표 이름이 맞는 폴더부터 읽는다."""
+    return sorted(folders, key=lambda folder: (*folder_priority(folder, hints), folder)) if hints else folders
 
 
 def repository_hint_score(item, hints):
@@ -154,6 +182,7 @@ class GithubClient:
         self.max_requests = max_requests
         self.request_count = 0
         self.last_quota = {}
+        self.last_discovery_stats = {"source_pool_count": 0, "known_skipped": 0, "selected_count": 0}
         self.before_request = None
         self.observe_response = None
         self.deadline = time.monotonic() + timeout_seconds
@@ -215,8 +244,10 @@ class GithubClient:
         if time.monotonic() >= self.deadline:
             raise CollectionError("collection_deadline_exceeded")
 
-    def discover(self, query: str, limit: int, *, sort="updated", hints=None) -> list[RepositoryConfig]:
+    def discover(self, query: str, limit: int, *, sort="updated", hints=None,
+                 exclude_repositories=None) -> list[RepositoryConfig]:
         """작업 관련 공개 검색에서 중복 없는 저장소 후보를 제한된 수만큼 발견한다."""
+        self.last_discovery_stats = {"source_pool_count": 0, "known_skipped": 0, "selected_count": 0}
         if not 1 <= limit <= 20 or not query.strip() or len(query) > 200 or sort not in {"updated", "best_match"}:
             raise CollectionError("invalid_search")
         hints = [] if hints is None else hints
@@ -225,6 +256,13 @@ class GithubClient:
         hints = list(dict.fromkeys(hints))
         if len(hints) > 20:
             raise CollectionError("invalid_search")
+        excluded = [] if exclude_repositories is None else exclude_repositories
+        if not isinstance(excluded, (list, tuple, set, frozenset)):
+            raise CollectionError("invalid_search")
+        try:
+            excluded = {RepositoryConfig(repository=value).repository for value in excluded}
+        except (ValueError, TypeError):
+            raise CollectionError("invalid_search") from None
         fetch_limit = max(limit, min(20, limit * 5)) if hints else limit
         params = {"q": query + " is:public", "per_page": fetch_limit}
         if sort == "updated":
@@ -236,14 +274,23 @@ class GithubClient:
             items = data["items"]
             if not isinstance(items, list) or len(items) > fetch_limit:
                 raise CollectionError("invalid_search_payload")
+            self.last_discovery_stats["source_pool_count"] = len(items)
             found = {}
+            seen = set()
             for index, item in enumerate(items):
                 if item.get("private") is not False or item.get("archived") is not False:
                     continue
                 config = RepositoryConfig(repository=item["full_name"])
-                if config.repository not in found:
-                    found[config.repository] = (config, repository_hint_score(item, hints), index)
-            return [config for config, _, _ in sorted(found.values(), key=lambda row: (-row[1], row[2]))[:limit]]
+                if config.repository in seen:
+                    continue
+                seen.add(config.repository)
+                if config.repository in excluded:
+                    self.last_discovery_stats["known_skipped"] += 1
+                    continue
+                found[config.repository] = (config, repository_hint_score(item, hints), index)
+            selected = [config for config, _, _ in sorted(found.values(), key=lambda row: (-row[1], row[2]))[:limit]]
+            self.last_discovery_stats["selected_count"] = len(selected)
+            return selected
         except (KeyError, TypeError, ValueError, AttributeError):
             raise CollectionError("invalid_search_payload") from None
 

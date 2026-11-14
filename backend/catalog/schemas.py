@@ -71,6 +71,8 @@ class DiscoveryProgress(BaseModel):
     repositories: list[str] = Field(default_factory=list,
         description="검색에서 발견한 저장소. 원문 수집 완료 여부는 items에서 별도로 확인")
     error: str | None = None
+    known_repositories_skipped: int = Field(default=0, ge=0,
+        description="현재 검색 페이지에서 이미 알려져 새 발견 대상에서 제외한 저장소 수. 비활성 소스도 포함")
 
 
 class CollectionResult(BaseModel):

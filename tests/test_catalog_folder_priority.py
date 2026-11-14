@@ -63,7 +63,7 @@ def test_matching_folder_is_first_without_removing_or_duplicating_others(remote_
     folders = ["skills/a-docs", "skills/b-planning", "skills/z-api-security", "skills/y-auth"]
     client, _ = remote_client(folders)
     plan = client.prepare(RepositoryConfig(repository="example/skills", folder_hints=["api_security", "api_security"]))
-    assert plan.state["folders"] == ["skills/y-auth", "skills/z-api-security", "skills/a-docs", "skills/b-planning"]
+    assert plan.state["folders"] == ["skills/z-api-security", "skills/y-auth", "skills/a-docs", "skills/b-planning"]
     assert set(plan.state["folders"]) == set(folders)
     assert len(plan.state["folders"]) == len(folders)
     assert plan.state["folder_hints"] == ["api_security"]
