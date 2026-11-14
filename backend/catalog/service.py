@@ -13,6 +13,9 @@ from backend.catalog.classification import CLASSIFIER_VERSION, classify_bundle
 from backend.catalog.github_client import CollectionError, GithubClient
 from backend.models import Asset, AssetVersion, ChangeEvent, Source, utc_now
 
+STOP_ERRORS = {"rate_limited", "authentication_failed", "forbidden",
+               "request_budget_exceeded", "collection_deadline_exceeded"}
+
 
 def stable_id(prefix: str, value: str) -> str:
     """동일 원본 키에 대해 재수집해도 변하지 않는 식별자를 만든다."""
@@ -103,10 +106,14 @@ class CatalogCollector:
             source.last_error = None
         return {"repository": snapshot.repository, "status": "done", "new_versions": count}
 
-    def run(self, config: CollectionConfig):
+    def run(self, config: CollectionConfig, *, progress=None):
         """검색으로 발견한 후보와 기존 추적 저장소를 중복 없이 순차 수집한다."""
         repos = {item.repository: item for item in config.repositories}
         discovery_errors = []
+        def report(items):
+            """외부 요청을 추가하지 않고 현재 저장 결과를 진행 이력에 전달한다."""
+            if progress:
+                progress({"items": list(items), "discovery_errors": list(discovery_errors)})
         for query in config.discovery_queries:
             try:
                 for item in self.client.discover(query, config.discovery_limit):
@@ -115,12 +122,15 @@ class CatalogCollector:
             except CollectionError as error:
                 discovery_errors.append({"query": query, "error": error.code,
                                          "retry_after": error.retry_after, "reset_at": error.reset_at})
-                if error.code in {"rate_limited", "authentication_failed", "forbidden"}:
+                if error.code in STOP_ERRORS:
+                    report([])
                     return {"items": [], "discovery_errors": discovery_errors}
+        report([])
         results = []
         for item in repos.values():
             result = self.collect(item)
             results.append(result)
-            if result.get("error") in {"rate_limited", "authentication_failed", "forbidden"}:
+            report(results)
+            if result.get("error") in STOP_ERRORS:
                 break
         return {"items": results, "discovery_errors": discovery_errors}

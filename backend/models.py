@@ -14,6 +14,30 @@ class Base(DeclarativeBase):
     pass
 
 
+class CatalogSyncJob(Base):
+    __tablename__ = "catalog_sync_job"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String)
+    request_key: Mapped[str] = mapped_column(String)
+    request_hash: Mapped[str] = mapped_column(String)
+    config_json: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    active_slot: Mapped[int | None] = mapped_column(Integer, unique=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String, default=utc_now)
+    expires_at: Mapped[str] = mapped_column(String)
+    __table_args__ = (
+        UniqueConstraint("profile_id", "request_key", name="uq_catalog_sync_request"),
+        CheckConstraint("status IN ('queued', 'running', 'done', 'partial', 'failed', 'interrupted')",
+                        name="ck_catalog_sync_status"),
+        CheckConstraint("(status IN ('queued', 'running') AND active_slot = 1 AND active_slot IS NOT NULL) OR "
+                        "(status NOT IN ('queued', 'running') AND active_slot IS NULL)", name="ck_catalog_sync_slot"),
+    )
+
+
 class Profile(Base):
     __tablename__ = "profile"
     id: Mapped[str] = mapped_column(String, primary_key=True)
