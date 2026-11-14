@@ -56,7 +56,8 @@ def safe_evidence(tags):
     """허용된 태그와 상대 경로의 원문 근거만 상세 응답에 포함한다."""
     result = []
     allowed = {"task_types": {"code_review", "test_generation"},
-        "capabilities": {"input_validation", "exception_handling", "regression_test", "test_coverage", "documentation"}}
+        "capabilities": {"input_validation", "exception_handling", "regression_test", "test_coverage", "documentation",
+            "api_security", "accessibility", "performance", "browser_testing", "test_design", "database_changes", "typing"}}
     for item in tags.get("evidence", [])[:20] if isinstance(tags.get("evidence"), list) else []:
         try:
             evidence = TagEvidence.model_validate(item)
@@ -132,7 +133,7 @@ def candidate_detail(session, version, profile_id):
         provenance="community" if verified else "unverified", source_verification="demo" if demo else "verified" if verified else "unverified",
         integrity_status=inspection["integrity_status"], maintainer=Maintainer(license=declared_license,
             last_updated_at=source_metadata.revision_committed_at if asset.kind == "repo" else None),
-        source_metadata=source_metadata,
+        source_metadata=source_metadata, dimensions=tags.get("dimensions", {}),
         compatibility=compatible, compatibility_reasons=reasons, permissions=permissions,
         risk_signals=list(signals.values()), risk_signal_codes=list(signals),
         support_level=approved.support_level if approved else "information_only",

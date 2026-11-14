@@ -14,7 +14,7 @@ def method_response(method):
     return WorkMethodResponse(method_id=method.id, version=method.version,
         task_type=method.task_type, prompt_text=method.prompt_text,
         required_checks=method.required_checks, scoring_preferences=method.scoring_preferences,
-        is_active=method.is_active, created_at=method.created_at)
+        workflow=method.workflow_json, is_active=method.is_active, created_at=method.created_at)
 
 
 def work_method_router(sessions, auth):
@@ -36,7 +36,9 @@ def work_method_router(sessions, auth):
                 if previous:
                     previous.is_active = False
                     session.flush()
-                method = WorkMethod(id=method_id, version=version, profile_id=profile_id, **body.model_dump())
+                values = body.model_dump()
+                values["workflow_json"] = values.pop("workflow")
+                method = WorkMethod(id=method_id, version=version, profile_id=profile_id, **values)
                 session.add(method)
                 session.flush()
                 return method_response(method)

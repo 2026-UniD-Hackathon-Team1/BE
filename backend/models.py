@@ -25,6 +25,7 @@ class CatalogSyncJob(Base):
     active_slot: Mapped[int | None] = mapped_column(Integer, unique=True)
     request_count: Mapped[int] = mapped_column(Integer, default=0)
     result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    context_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, default=utc_now)
     updated_at: Mapped[str] = mapped_column(String, default=utc_now)
@@ -53,6 +54,7 @@ class Profile(Base):
     task_types: Mapped[list] = mapped_column("task_types_json", JSON)
     goals: Mapped[list] = mapped_column("goals_json", JSON)
     preferences: Mapped[dict] = mapped_column("preferences_json", JSON, default=dict)
+    context_json: Mapped[dict] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[str] = mapped_column(String, default=utc_now)
 
@@ -153,6 +155,7 @@ class WorkMethod(Base):
     skill_version_id: Mapped[str | None] = mapped_column(ForeignKey("asset_version.id"))
     required_checks: Mapped[list] = mapped_column("required_checks_json", JSON, default=list)
     scoring_preferences: Mapped[dict] = mapped_column("scoring_preferences_json", JSON, default=dict)
+    workflow_json: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[str] = mapped_column(String, default=utc_now)
     __table_args__ = (

@@ -1,8 +1,9 @@
 """원문에 명시된 작업 설명만 규칙으로 분류하고 파일별 근거를 보존한다."""
 import re
 from pathlib import PurePosixPath
+from backend.catalog.dimensions import extract_dimensions
 
-CLASSIFIER_VERSION = "explicit-phrases-v2"
+CLASSIFIER_VERSION = "explicit-context-v3"
 RULES = {
     "task_types": {
         "code_review": r"\bcode[ -]review\b|\breview(?:s|ing)?\s+(?:(?:the|a|your)\s+)?(?:code|pull requests?|diff|changes|branch|pr)\b|코드\s*리뷰",
@@ -92,4 +93,15 @@ def classify_bundle(files: dict[str, bytes]) -> dict:
                             tags[category].append(tag)
                             tags["evidence"].append({"category": category, "tag": tag,
                                 "path": path, "line": number, "excerpt": line})
+    dimensions = extract_dimensions(files)
+    tags["dimensions"] = dimensions
+    tags["languages"] = dimensions["languages"] or ["unknown"]
+    tags["supported_tools"] = dimensions["tools"]
+    for capability in dimensions["capabilities"]:
+        if capability not in tags["capabilities"]:
+            tags["capabilities"].append(capability)
+            evidence = next(item for item in dimensions["evidence"]
+                            if item["dimension"] == "capabilities" and item["value"] == capability)
+            tags["evidence"].append({"category": "capabilities", "tag": capability,
+                "path": evidence["path"], "line": evidence["line"], "excerpt": evidence["excerpt"]})
     return tags

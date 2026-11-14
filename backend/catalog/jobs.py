@@ -47,13 +47,15 @@ class SyncJobResponse(BaseModel):
     created_at: str
     updated_at: str
     expires_at: str
+    context_snapshot: dict = Field(default_factory=dict)
 
 
 def serialize_job(job):
     """요청 키나 내부 인증 값 없이 프론트용 진행 정보를 반환한다."""
     return SyncJobResponse(id=job.id, status=job.status, request_count=job.request_count,
         max_requests=job.config_json["max_requests"], result=job.result_json, error=job.error,
-        created_at=job.created_at, updated_at=job.updated_at, expires_at=job.expires_at)
+        created_at=job.created_at, updated_at=job.updated_at, expires_at=job.expires_at,
+        context_snapshot=job.context_snapshot)
 
 
 def expire_jobs(session):

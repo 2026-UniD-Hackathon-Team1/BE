@@ -65,7 +65,37 @@ class SourceList(BaseModel):
 
 
 TaskType = Literal["code_review", "test_generation"]
-Goal = Literal["input_validation", "exception_handling", "regression_test", "test_coverage", "documentation"]
+Goal = Literal["input_validation", "exception_handling", "regression_test", "test_coverage", "documentation",
+               "api_security", "accessibility", "performance", "browser_testing", "test_design", "database_changes", "typing"]
+
+
+class ProfileContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    frameworks: list[str] = Field(default_factory=list, max_length=15)
+    tools: list[str] = Field(default_factory=list, max_length=15)
+    additional_languages: list[str] = Field(default_factory=list, max_length=10)
+    focus_areas: list[Goal] = Field(default_factory=list, max_length=12)
+    excluded_capabilities: list[Goal] = Field(default_factory=list, max_length=12)
+    excluded_tools: list[str] = Field(default_factory=list, max_length=15)
+    prefer_recent: bool = True
+
+    @field_validator("frameworks", "tools", "additional_languages", "excluded_tools")
+    @classmethod
+    def normalized_labels(cls, values):
+        """짧은 기술 이름만 저장하고 검색에 쓸 수 없는 자유 문장과 경로는 차단한다."""
+        import re
+        if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+#-]{0,39}", value) for value in values):
+            raise ValueError("short technology labels required")
+        return list(dict.fromkeys(value.lower() for value in values))
+
+
+class WorkflowStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    label: str = Field(min_length=1, max_length=120)
+    capabilities: list[Goal] = Field(min_length=1, max_length=12)
+    status: Literal["covered", "gap"]
+    weight: int = Field(default=3, ge=1, le=5)
 
 
 class ProfileInput(BaseModel):
@@ -73,8 +103,9 @@ class ProfileInput(BaseModel):
     role: str = Field(min_length=1, max_length=100, examples=["백엔드 개발"])
     primary_language: str = Field(min_length=1, max_length=40, examples=["python"])
     task_types: list[TaskType] = Field(min_length=1, max_length=2, examples=[["code_review"]])
-    goals: list[Goal] = Field(default_factory=list, max_length=5)
+    goals: list[Goal] = Field(default_factory=list, max_length=12)
     preferences: dict[str, bool | str | int | float] = Field(default_factory=dict, max_length=20)
+    context: ProfileContext = Field(default_factory=ProfileContext)
 
     @field_validator("task_types", "goals")
     @classmethod
@@ -101,6 +132,15 @@ class WorkMethodInput(BaseModel):
     prompt_text: str = Field(min_length=1, max_length=20000, examples=["변경된 함수의 입력 검증과 예외 처리를 확인해 줘."])
     required_checks: list[str] = Field(default_factory=list, max_length=30)
     scoring_preferences: dict[str, str] = Field(default_factory=dict, max_length=20)
+    workflow: list[WorkflowStep] = Field(default_factory=list, max_length=12)
+
+    @field_validator("workflow")
+    @classmethod
+    def distinct_steps(cls, values):
+        """불변 작업 방식 안에서 단계 식별자가 서로 겹치지 않게 한다."""
+        if len({step.id for step in values}) != len(values):
+            raise ValueError("duplicate workflow step")
+        return values
 
 
 class WorkMethodResponse(WorkMethodInput):
@@ -143,7 +183,10 @@ class RecommendationCard(BaseModel):
     reason: str | None
     latest_comparison: LatestComparison | None
     demo: bool
+    assessment: dict = Field(default_factory=dict, description="작업 단계와 맥락 및 원문 근거에 따른 관련성 평가이며 성능 점수가 아님")
 
 
 class RecommendationList(BaseModel):
     items: list[RecommendationCard]
+    context: dict = Field(default_factory=dict)
+    excluded: list[dict] = Field(default_factory=list, description="include_excluded 요청 시 개인 맥락에서 제외한 후보와 이유")

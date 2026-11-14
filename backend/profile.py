@@ -20,12 +20,13 @@ def profile_router(sessions, auth):
             return ProfileResponse(profile_id=profile.id, profile_version=profile.version,
                 role=profile.role, primary_language=profile.primary_language,
                 task_types=profile.task_types, goals=profile.goals,
-                preferences=profile.preferences, updated_at=profile.updated_at)
+                preferences=profile.preferences, context=profile.context_json, updated_at=profile.updated_at)
 
     @router.put("", response_model=ProfileSaved, summary="내 프로필 등록 및 수정")
     def save_profile(body: ProfileInput, profile_id: str = Depends(auth)):
         """내용이 바뀔 때만 프로필 버전을 올리고 추천 재계산 필요 여부를 반환한다."""
         values = body.model_dump()
+        values["context_json"] = values.pop("context")
         with sessions.begin() as session:
             profile = session.get(Profile, profile_id)
             changed = profile is None or any(getattr(profile, key) != value for key, value in values.items())

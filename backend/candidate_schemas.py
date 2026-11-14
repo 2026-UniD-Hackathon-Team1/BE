@@ -60,6 +60,7 @@ class CandidateDetail(BaseModel):
     adapter_id: str | None
     adapter_review_status: Literal["missing", "unreviewed", "hash_mismatch", "reviewed", "ambiguous"]
     task_types: list[str]
+    dimensions: dict = Field(default_factory=dict, description="원문에 명시된 언어와 프레임워크 및 도구와 기능의 근거")
     tag_evidence: list[TagEvidence]
     related_reasons: list[str]
     is_current: bool | None
