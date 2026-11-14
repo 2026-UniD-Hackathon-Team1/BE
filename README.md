@@ -53,3 +53,22 @@ seed는 실제 수집 결과가 아닌 오프라인 개발용 데모입니다.
 고정 커밋의 스킬 파일 전체를 해시하고 원본을 DB의 JSON 번들로 보관합니다. 파일과 응답 크기, 파일 수에 상한이 있으며 잘린 트리나 링크가 있는 스킬은 실패로 처리합니다. 버전은 중복 저장하지 않고 실패 시 기존 카탈로그를 유지합니다. 과거 콘텐츠로 복귀하면 기존 버전을 다시 가리키며 복귀 알림 이벤트는 아직 생성하지 않습니다.
 
 새 후보는 `information_only`, 태깅은 `pending` 상태로 저장합니다. 실제 수집 API 연동, 분류와 개인화 추천, PostgreSQL 및 배포 검증은 아직 완료되지 않았습니다.
+
+## 프론트용 API 문서
+
+DB 마이그레이션과 선택적 데모 seed 실행 후 서버를 시작합니다.
+
+```powershell
+$env:CORS_ORIGINS = 'http://localhost:5173'
+.\.venv\Scripts\python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765
+```
+
+- Swagger UI: http://127.0.0.1:8765/docs
+- OpenAPI JSON: http://127.0.0.1:8765/openapi.json
+- 상태 확인: `GET /api/health`
+- 현재 후보 목록: `GET /api/catalog/candidates?kind=skill&limit=20&offset=0`
+- 수집 상태: `GET /api/catalog/sources`
+
+현재는 공통 공개 카탈로그 조회만 제공합니다. 개인화 추천과 사용자 정보 및 비교 API는 구현 후 문서에 추가합니다. 후보 목록은 미검증 정보이며 데모 여부를 표시합니다. 원본 파일과 로컬 경로는 목록에 포함하지 않습니다. 오류는 `{"error":{"code":"...","message":"..."}}` 형식입니다.
+
+개발 서버는 기본적으로 로컬에만 연결하고 CORS는 `CORS_ORIGINS`에 지정한 주소만 허용합니다. 공개 배포 주소와 PostgreSQL 검증은 아직 준비되지 않았습니다.
