@@ -4,10 +4,11 @@ from pathlib import Path
 import uvicorn
 
 from backend.settings import validate_deployment
+from backend.migrate import migrate
 
 
 def load_local_env():
-    """Load simple KEY=VALUE settings from the project .env without overriding shell values."""
+    """프로젝트의 단순한 환경 설정을 읽되 셸에서 지정한 값은 유지한다."""
     env_path = Path.cwd() / ".env"
     if not env_path.is_file():
         return
@@ -28,6 +29,8 @@ def main():
     port = int(os.environ.get("PORT", "8765"))
     if not 1 <= port <= 65535:
         raise ValueError("PORT must be between 1 and 65535")
+    if os.environ.get("APP_ENV") in {"staging", "production"} or os.environ.get("RAILWAY_ENVIRONMENT_ID"):
+        migrate()
     uvicorn.run("backend.main:app", host="0.0.0.0", port=port)
 
 

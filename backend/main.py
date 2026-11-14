@@ -6,10 +6,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import inspect, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.db import make_engine, session_factory
+from backend.schema_readiness import SchemaReadinessError, assert_schema_ready
 from backend.settings import database_url as configured_database_url
 from backend.auth import web_auth, operator_auth
 from backend.login import login_router
@@ -112,12 +113,12 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
 
     @app.get("/api/health", response_model=HealthResponse, tags=["system"], summary="API와 DB 준비 상태 확인")
     def health():
-        """DB 연결 및 필수 수집 스키마가 준비됐는지 확인한다."""
+        """DB 연결과 현재 API 전체가 요구하는 테이블 및 열과 리비전을 확인한다."""
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
-            if not inspect(connection).has_table("source") or "sync_state" not in {
-                column["name"] for column in inspect(connection).get_columns("source")
-            }:
+            try:
+                assert_schema_ready(connection)
+            except SchemaReadinessError:
                 raise HTTPException(503, detail={"code": "migration_required", "message": "최신 마이그레이션을 적용해 주세요."})
         return HealthResponse()
 
