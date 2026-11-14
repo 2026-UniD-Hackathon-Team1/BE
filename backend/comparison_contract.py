@@ -79,3 +79,5 @@ class ComparisonDetail(BaseModel):
     llm_judgment: dict[str, Any] | None = None
     limits: list[str]
     is_prerecorded: bool
+    created_at: str | None = None
+    completed_at: str | None = None
