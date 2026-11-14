@@ -39,8 +39,8 @@ class CollectionConfig(BaseModel):
     repositories: list[RepositoryConfig] = Field(default_factory=list, max_length=20)
     discovery_queries: list[str] = Field(default_factory=list, max_length=5)
     discovery_limit: int = Field(default=5, ge=1, le=20)
-    batch_size: int = Field(default=5, ge=1, le=20)
-    resume_pending: bool = False
+    batch_size: int = Field(default=5, ge=1, le=20, description="저장소당 이번 요청에서 처리할 최대 번들 수")
+    resume_pending: bool = Field(default=False, description="이미 발견한 미완료 후보를 DB 커서부터 수집 대상에 포함")
 
     @field_validator("discovery_queries")
     @classmethod

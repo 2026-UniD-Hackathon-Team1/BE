@@ -148,6 +148,24 @@ def test_catalog_sync_requires_web_auth(database):
         assert client.get("/api/catalog/jobs/anything").status_code == 401
         schema = client.get("/openapi.json").json()
         assert schema["paths"]["/api/catalog/sync"]["post"]["security"]
+        assert "completed_units" in schema["components"]["schemas"]["RepositoryProgress"]["properties"]
+        assert "resume_pending" in schema["components"]["schemas"]["SyncRequest"]["properties"]
+
+
+def test_existing_request_keys_survive_new_default_fields(sync_api):
+    """배포 전에 저장한 요청 키도 새 기본 필드 때문에 충돌하지 않는다."""
+    client, sessions, remote, _ = sync_api
+    with sessions.begin() as session:
+        session.add(CatalogSyncJob(id="legacy", profile_id="local", request_key="legacy", request_hash="old-hash",
+            config_json={"repositories": [], "discovery_queries": ["review"], "discovery_limit": 5,
+                         "max_requests": 20}, status="done", active_slot=None,
+            expires_at="2000-01-01T00:00:00.000000Z"))
+    response = client.post("/api/catalog/sync", json={"discovery_queries": ["review"]},
+                           headers={"Idempotency-Key": "legacy"})
+    assert response.status_code == 202 and response.json()["id"] == "legacy"
+    assert remote.requests == []
+    assert client.post("/api/catalog/sync", json={"discovery_queries": ["review"], "batch_size": 1},
+                       headers={"Idempotency-Key": "legacy"}).status_code == 409
 
 
 def test_concurrent_requests_share_job_and_block_other_run(sync_api):

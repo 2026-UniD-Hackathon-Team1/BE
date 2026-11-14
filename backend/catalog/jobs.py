@@ -12,6 +12,7 @@ from sqlalchemy import select, text, update
 from backend.catalog.config import CollectionConfig
 from backend.catalog.github_client import GithubClient
 from backend.catalog.service import CatalogCollector
+from backend.catalog.schemas import CollectionResult
 from backend.models import CatalogSyncJob, utc_now
 
 # 제출과 실제 실행에 각각 잠금을 사용해 여러 서버 프로세스도 한 번만 수집한다.
@@ -41,7 +42,7 @@ class SyncJobResponse(BaseModel):
     status: Literal["queued", "running", "done", "partial", "failed", "interrupted"]
     request_count: int
     max_requests: int
-    result: dict
+    result: CollectionResult
     error: str | None
     created_at: str
     updated_at: str
