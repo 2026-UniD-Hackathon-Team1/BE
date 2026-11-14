@@ -56,6 +56,13 @@ def test_pair_heartbeat_restart_and_auth_boundaries(client, database):
         assert restarted.post("/api/agent/heartbeat", headers=bearer, json={}).status_code == 204
 
 
+def test_pairing_code_includes_pypi_install_command(client):
+    response = client.post("/api/agent/pairing-code", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["install_command"] == "python -m pip install galtalka-agent"
+    assert response.json()["command"] is None
+
+
 def test_code_expiry_reissue_and_device_offline(client, monkeypatch):
     """재발급한 코드만 유효하고 10분 코드 만료와 60초 연결 만료가 적용된다."""
     now = agent.current_time()
