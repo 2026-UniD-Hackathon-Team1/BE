@@ -163,9 +163,7 @@ def candidate_router(sessions, auth, operator):
                 raise HTTPException(404, detail={"code": "candidate_not_found", "message": "후보를 찾을 수 없습니다."})
             return candidate_detail(session, version, profile_id)
 
-    @router.post("/{version_id}/approve-comparison", status_code=201,
-                 summary="검토한 고정 스킬 버전을 Codex 코드 리뷰 비교에 승인")
-    def approve_comparison(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
+    def approve_candidate(version_id, body, support_level):
         if not body.confirmed:
             raise HTTPException(422, detail={"code": "approval_not_confirmed", "message": "후보 파일 검토를 확인해 주세요."})
         with sessions.begin() as session:
@@ -203,14 +201,24 @@ def candidate_router(sessions, auth, operator):
                     or not isinstance(existing.runtime, dict) or existing.runtime.get("skill_name", name) != name):
                     raise HTTPException(409, detail={"code": "adapter_conflict", "message": "기존 승인 기록을 확인해 주세요."})
                 adapter = existing
+                adapter.support_level = support_level
             else:
                 adapter = CandidateAdapter(id="adapter_" + uuid4().hex, asset_version_id=version_id,
                     runner="codex_cli", supported_tasks=["code_review"],
-                    approved_bundle_sha256=version.bundle_sha256, support_level="comparable",
+                    approved_bundle_sha256=version.bundle_sha256, support_level=support_level,
                     reviewed=True, permissions={"file_read": True}, runtime={})
                 session.add(adapter)
                 session.flush()
             return {"adapter_id": adapter.id, "candidate_version_id": version_id,
                 "approved_bundle_sha256": version.bundle_sha256, "support_level": adapter.support_level}
+
+    @router.post("/{version_id}/approve-comparison", status_code=201,
+                 summary="검토한 고정 스킬 버전을 Codex 코드 리뷰 비교에 승인")
+    def approve_comparison(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
+        return approve_candidate(version_id, body, "comparable")
+
+    @router.post("/{version_id}/approve-applicable", summary="검토한 고정 스킬 버전을 PC 적용에 승인")
+    def approve_applicable(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
+        return approve_candidate(version_id, body, "applicable")
 
     return router
