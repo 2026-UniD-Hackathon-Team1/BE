@@ -1,9 +1,11 @@
 """원문에 명시된 작업 설명만 규칙으로 분류하고 파일별 근거를 보존한다."""
 import re
 from pathlib import PurePosixPath
-from backend.catalog.dimensions import TEST_FIRST_PATTERN, UNSUPPORTED_SECTION, _is_catalog, extract_dimensions
+from backend.catalog.dimensions import (TEST_FIRST_PATTERN, UNSUPPORTED_SECTION, _is_catalog,
+                                        capability_claimed, extract_dimensions)
+from backend.catalog.references import enrich_referenced_capabilities
 
-CLASSIFIER_VERSION = "explicit-context-v5"
+CLASSIFIER_VERSION = "explicit-context-v8"
 RULES = {
     "task_types": {
         "code_review": r"\bcode[ -]review\b|\breview(?:s|ing)?\s+(?:(?:the|a|your)\s+)?(?:code|pull requests?|diff|changes|branch|pr)\b|코드\s*리뷰",
@@ -19,7 +21,7 @@ RULES = {
 }
 NEGATED = re.compile(r"\b(?:no|not|never|unsupported|cannot)\b|doesn['’]t|can['’]t|지원하지|지원\s*안|제외", re.I)
 FUTURE_TASK_CLAIM = re.compile(r"\b(?:roadmap|planned|planning|coming soon|todo|not implemented|future work)\b|"
-    r"\b(?:will|would)\s+(?:support|add|include|implement|provide)\b|\bplan\s+to\b|"
+    r"\b(?:will|would)\s+(?:support|add|include|implement|provide|be\s+(?:supported|added|included|implemented|provided))\b|\bplan\s+to\b|"
     r"지원\s*예정|추가\s*예정|추후|향후", re.I)
 
 
@@ -105,20 +107,23 @@ def classify_bundle(files: dict[str, bytes]) -> dict:
             for clause in re.split(r"(?<=[.!?])\s+|;\s*|\s+(?:but|whereas|however)\s+|하지만|반면", prose, flags=re.I):
                 for category, rules in RULES.items():
                     for tag, pattern in rules.items():
-                        match = re.search(pattern, clause, re.I)
-                        if tag not in tags[category] and match and supported_clause(clause, match):
+                        if tag in tags[category]:
+                            continue
+                        match = next((item for item in re.finditer(pattern, clause, re.I)
+                            if supported_clause(clause, item) and (category != "capabilities"
+                                or capability_claimed(tag, clause, item))), None)
+                        if match:
                             tags[category].append(tag)
                             tags["evidence"].append({"category": category, "tag": tag,
                                 "path": path, "line": number, "excerpt": _bounded_excerpt(line, clause, match)})
-    dimensions = extract_dimensions(files)
+    dimensions = enrich_referenced_capabilities(files, extract_dimensions(files))
     tags["dimensions"] = dimensions
     tags["languages"] = dimensions["languages"] or ["unknown"]
     tags["supported_tools"] = dimensions["tools"]
-    for capability in dimensions["capabilities"]:
-        if capability not in tags["capabilities"]:
-            tags["capabilities"].append(capability)
-            evidence = next(item for item in dimensions["evidence"]
-                            if item["dimension"] == "capabilities" and item["value"] == capability)
-            tags["evidence"].append({"category": "capabilities", "tag": capability,
-                "path": evidence["path"], "line": evidence["line"], "excerpt": evidence["excerpt"]})
+    # 과거 핵심 규칙의 오탐을 새 차원과 합쳐 되살리지 않고 최종 기능 근거만 사용한다.
+    tags["capabilities"] = list(dimensions["capabilities"])
+    tags["evidence"] = [item for item in tags["evidence"] if item["category"] != "capabilities"]
+    tags["evidence"].extend({"category": "capabilities", "tag": item["value"],
+        "path": item["path"], "line": item["line"], "excerpt": item["excerpt"]}
+        for item in dimensions["evidence"] if item["dimension"] == "capabilities")
     return tags

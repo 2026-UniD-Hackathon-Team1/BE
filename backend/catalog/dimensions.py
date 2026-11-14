@@ -3,7 +3,7 @@
 import re
 
 
-DIMENSIONS_VERSION = "document-dimensions-v3"
+DIMENSIONS_VERSION = "document-dimensions-v5"
 TEST_FIRST_PATTERN = (r"\btest[ -]driven[ -]development\b|\btest[ -]first\b|"
     r"\bred[ -]green[ -]refactor\b|\bwrite\s+(?:(?:a|the|one)\s+)?test\s+first\b|"
     r"테스트\s*주도\s*개발|테스트\s*우선\s*(?:개발|전략|접근)")
@@ -56,17 +56,17 @@ RULES = {
         "eslint": r"\beslint\b",
     },
     "capabilities": {
-        "input_validation": r"\binput[ -]validation\b|입력\s*검증",
-        "exception_handling": r"\bexception[ -]handling\b|예외\s*처리",
-        "regression_test": r"\bregression[ -]tests?\b|회귀\s*테스트",
-        "test_coverage": r"\btest[ -]coverage\b|테스트\s*커버리지",
+        "input_validation": r"\binput[ -]validation\b|\bvalidat(?:e|es|ing)\s+(?:(?:the|all)\s+)?(?:inputs?|untrusted\s+(?:inputs?|data))\b|입력\s*검증",
+        "exception_handling": r"\b(?:exception|error)[ -]handling\b|\bhandl(?:e|es|ing)\s+(?:(?:the|runtime|unexpected)\s+)?(?:errors?|exceptions?)\b|(?:예외|오류)\s*처리",
+        "regression_test": r"\bregression[ -]tests?\b|\b(?:writ(?:e|es|ing)|add(?:s|ing)?|creat(?:e|es|ing))\s+(?:(?:a|the|one)\s+)?(?:(?:new|failing|regression|automated|minimal)\s+){0,2}tests?\s+(?:(?:that\s+)?reproduc(?:e|es|ing)|to\s+reproduce)\s+(?:(?:a|the|this|reported|original|same)\s+){0,2}(?:bugs?|failures?)\b|회귀\s*테스트",
+        "test_coverage": r"\b(?:test|branch|line|statement)[ -]coverage\b|\bcoverage[ -](?:gaps?|reports?)\b|테스트\s*커버리지",
         "documentation": r"\bdocumentation\b|문서화",
-        "api_security": r"\bapi[ -]security\b|\bapi\s+(?:authentication|authorization)\b|API\s*보안|인증\s*[·/]?\s*인가\s*검토",
+        "api_security": r"\bapi[ -]security\b|\bapi\s+(?:authentication|authorization)\b|\bauthentication(?:\s+and\s+|\s*[&/]\s*)authorization\b|\baccess[ -]control[ -]checks?\b|API\s*보안|인증\s*[·/]?\s*인가\s*검토",
         "accessibility": r"\baccessibility\b|\ba11y\b|\bwcag\b|접근성",
         "performance": r"\bperformance\b|성능\s*(?:개선|최적화|분석|측정|검토|테스트)",
         "browser_testing": r"\bbrowser[ -](?:tests?|testing|automation)\b|\bend[ -]to[ -]end[ -](?:tests?|testing)\b|\be2e[ -](?:tests?|testing)\b|브라우저\s*(?:테스트|자동화)|종단간\s*테스트",
-        "test_design": r"\btest[ -]design\b|\b(?:design|designing)\s+test\s+cases\b|\btesting\s+strateg(?:y|ies)\b|테스트\s*(?:설계|전략)|경계값\s*(?:분석|테스트)|" + TEST_FIRST_PATTERN,
-        "database_changes": r"\bdatabase[ -](?:changes?|migrations?)\b|\bschema[ -]migrations?\b|데이터베이스\s*(?:변경|마이그레이션)|스키마\s*(?:변경|마이그레이션)",
+        "test_design": r"\btest[ -]design\b|\b(?:design|designing)\s+test\s+cases\b|\btest(?:ing)?[ -]strateg(?:y|ies)\b|테스트\s*(?:설계|전략)|경계값\s*(?:분석|테스트)|" + TEST_FIRST_PATTERN,
+        "database_changes": r"\bdatabase[ -](?:changes?|migrations?)\b|\bschema[ -](?:changes?|migrations?)\b|\bsql[ -]migrations?\b|데이터베이스\s*(?:변경|마이그레이션)|스키마\s*(?:변경|마이그레이션)",
         "typing": r"\btype[ -](?:hints?|safety|checking|annotations?)\b|\bstatic[ -]typing\b|타입\s*(?:힌트|안전성|검사|검증)|정적\s*타이핑",
     },
 }
@@ -87,7 +87,7 @@ NEGATIVE = re.compile(
 )
 FUTURE = re.compile(
     r"\b(?:roadmap|planned|planning|plans|coming soon|upcoming|todo|to do|future|not implemented)\b|"
-    r"\b(?:will|would)\s+(?:support|add|include|implement|provide)\b|\bplan\s+to\b|"
+    r"\b(?:will|would)\s+(?:support|add|include|implement|provide|be\s+(?:supported|added|included|implemented|provided))\b|\bplan\s+to\b|"
     r"예정|추후|향후|계획", re.I,
 )
 SECRET_ASSIGNMENT = re.compile(
@@ -209,10 +209,24 @@ def declares_target(dimension, value, excerpt):
     return False
 
 
-def _excerpt(line: str, pattern: re.Pattern) -> str:
+def capability_claimed(capability, clause, match):
+    """문서 참고 지시를 문서 작성 기능으로 바꾸지 않고 실제 생성 동작은 유지한다."""
+    if capability != "documentation":
+        return True
+    before = clause[:match.start()]
+    references = list(re.finditer(r"\b(?:read(?:s|ing)?|see|refer(?:ring)?\s+(?:back\s+)?to|consult|check|follow|use)\b", before, re.I))
+    if not references:
+        return True
+    writers = list(re.finditer(r"\b(?:writ(?:e|es|ing)|generat(?:e|es|ing)|creat(?:e|es|ing)|updat(?:e|es|ing)|maintain(?:s|ing)?|produc(?:e|es|ing)|provid(?:e|es|ed|ing))\b", before, re.I))
+    return bool(writers and writers[-1].start() > references[-1].start())
+
+
+def _excerpt(line: str, pattern: re.Pattern, clause=None, match=None) -> str:
     """근거 기술명이 보이도록 원문 일부를 최대 240자로 자른다."""
-    match = pattern.search(line)
-    start = max(0, match.start() - 80) if match else 0
+    offset = line.find(clause) if clause is not None else -1
+    source_match = pattern.search(line)
+    position = offset + match.start() if offset >= 0 and match else source_match.start() if source_match else 0
+    start = max(0, position - 80)
     return line[start:start + 240]
 
 
@@ -273,13 +287,15 @@ def extract_dimensions(files: dict[str, bytes]) -> dict:
                 continue
             for dimension, values in COMPILED_RULES.items():
                 for value, pattern in values.items():
-                    if not pattern.search(clause):
+                    match = next((item for item in pattern.finditer(clause) if dimension != "capabilities"
+                        or capability_claimed(value, clause, item)), None)
+                    if match is None:
                         continue
                     if value not in result[dimension]:
                         result[dimension].append(value)
                         result["evidence"].append({"dimension": dimension, "value": value,
                             "path": path, "line": number,
-                            "excerpt": _excerpt(original_lines[number - 1], pattern)})
+                            "excerpt": _excerpt(original_lines[number - 1], pattern, clause, match)})
                     if ((dimension, value) not in target_values and len(result["target_evidence"]) < 120
                             and declares_target(dimension, value, clause)):
                         result["target_evidence"].append({"dimension": dimension, "value": value,

@@ -7,8 +7,31 @@ from sqlalchemy import select
 
 from backend.catalog.classification import CLASSIFIER_VERSION, classify_bundle
 from backend.catalog.inspection import inspect_bundle
+from backend.catalog.github_client import MAX_BUNDLE_BYTES, MAX_FILE_BYTES, MAX_FILES
 from backend.db import configured_engine, session_factory
 from backend.models import AssetVersion
+
+
+def verified_bundle_files(metadata, expected_hash):
+    """전체 해시와 수집기 한도를 확인한 번들만 빠진 참조 없이 메모리로 복원한다."""
+    if not isinstance(metadata, dict) or inspect_bundle(metadata, expected_hash)["integrity_status"] != "verified":
+        return None
+    encoded = metadata["bundle"]["files"]
+    if len(encoded) > MAX_FILES:
+        return None
+    files, total = {}, 0
+    try:
+        for path, content in encoded.items():
+            if len(content) > 4 * ((MAX_FILE_BYTES + 2) // 3):
+                return None
+            data = base64.b64decode(content, validate=True)
+            total += len(data)
+            if len(data) > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                return None
+            files[path] = data
+    except (ValueError, TypeError):
+        return None
+    return files
 
 
 def reclassify_versions(sessions, *, limit=100, after=None, execute=False):
@@ -25,15 +48,12 @@ def reclassify_versions(sessions, *, limit=100, after=None, execute=False):
         changed, skipped = 0, 0
         for version in rows:
             metadata = version.metadata_json
-            if (metadata.get("demo") or metadata.get("classifier_version") == CLASSIFIER_VERSION or
-                inspect_bundle(metadata, version.bundle_sha256)["integrity_status"] != "verified"):
+            if (not isinstance(metadata, dict) or metadata.get("demo")
+                    or metadata.get("classifier_version") == CLASSIFIER_VERSION):
                 skipped += 1
                 continue
-            try:
-                files = {path: base64.b64decode(content, validate=True)
-                    for path, content in metadata["bundle"]["files"].items()
-                    if path.lower() in {"skill.md", "readme.md", "readme"} and len(content) <= 1400000}
-            except (ValueError, TypeError):
+            files = verified_bundle_files(metadata, version.bundle_sha256)
+            if files is None:
                 skipped += 1
                 continue
             tags = classify_bundle(files)

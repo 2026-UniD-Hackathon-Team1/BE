@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 
 from backend.personalization import build_context, rank_candidate
 from backend.catalog.dimensions import extract_dimensions
+from backend.catalog.classification import classify_bundle
 
 
 NOW = datetime(2026, 11, 15, tzinfo=timezone.utc)
@@ -112,7 +113,7 @@ def test_language_and_framework_contradictions_reject():
 
 def test_react_basis_in_next_project_can_match_without_execution_claim():
     """Next 프로젝트의 React 기반 관련성과 실행 호환성 보장을 혼동하지 않는다."""
-    item = candidate(dimensions={"languages": ["typescript"], "frameworks": ["react"]})
+    item = documented_candidate("Code review with input validation.\nSupports TypeScript and React.")
     result = rank(env=environment(metadata_json={"languages": ["typescript"], "frameworks": ["nextjs"]}), item=item)
     assert result["eligible"] and result["matches"]["frameworks"] == ["react"]
     assert "compatibility" not in result
@@ -219,11 +220,12 @@ def test_existing_prompt_alternatives_survive_strong_coverage_gate():
 def test_exact_bundle_installed_rejects_but_manifest_or_name_is_insufficient():
     """이름이나 manifest 해시만 같으면 전체 스킬 설치 버전으로 단정하지 않는다."""
     env = environment(installed_skills=[{"name": "Review", "manifest_sha256": "b" * 64}])
-    assert rank(env=env)["eligible"]
+    user = profile(goals=["input_validation"])
+    assert rank(user=user, env=env)["eligible"]
     env.installed_skills[0]["bundle_sha256"] = "b" * 64
-    assert not rank(env=env)["eligible"]
+    assert not rank(user=user, env=env)["eligible"]
     env.installed_skills[0]["excluded"] = True
-    assert rank(env=env)["eligible"]
+    assert rank(user=user, env=env)["eligible"]
 
 
 def test_exclusion_preferences_override_high_workflow_score():
@@ -415,3 +417,163 @@ def test_unsafe_separate_target_evidence_cannot_create_hard_conditions():
         "path": "C:/private.txt", "line": 1, "excerpt": "Supports Rust."}]
     result = rank(user=profile(goals=["input_validation"]), item=item)
     assert result["eligible"] and result["matches"]["target_claims"]["languages"] == []
+
+
+def browser_complement_case(text="Browser automation CLI for AI agents."):
+    """전체 테스트 작성 대신 명시한 브라우저 검증 공백을 가진 실제 형태의 입력을 만든다."""
+    item = candidate(tags=classify_bundle({"SKILL.md": text.encode()}))
+    user = profile(primary_language="typescript", task_types=["test_generation"], goals=["test_design"],
+        context_json={"frameworks": ["react"], "tools": ["codex_cli"]})
+    work = method("browser_testing", task_type="test_generation")
+    return user, {"test_generation": work}, item
+
+
+def test_explicit_browser_gap_can_receive_workflow_complement_without_source_task_relabeling():
+    """브라우저 자동화 원문을 전체 테스트 작성으로 부르지 않고 등록한 검증 단계에 연결한다."""
+    user, methods, item = browser_complement_case()
+    result = rank(user=user, methods=methods, item=item)
+    assert result["eligible"] and result["breakdown"]["task_relevance"] == 0
+    assert result["matches"]["relationship"] == "workflow_complement"
+    assert result["matches"]["task_type"] == "test_generation"
+    assert result["matches"]["candidate_task_types"] == []
+    assert result["matches"]["task_types"] == [] and item[1].tags["task_types"] == []
+    assert result["matches"]["method_id"] == methods["test_generation"].id
+    assert result["workflow_fit"][0]["matched_capabilities"] == ["browser_testing"]
+    assert "브라우저 검증 단계를 보완" in " ".join(result["reasons"])
+    assert "테스트 코드 작성 전체 지원은 확인하지 못함" in result["uncertainties"]
+    assert "support_level" not in result and "adapter_id" not in result
+
+
+def test_general_goal_covered_step_and_legacy_prompt_do_not_create_complement_permission():
+    """목표의 브라우저 단어나 이미 수행하는 검사 및 추정한 프롬프트만으로 관계를 만들지 않는다."""
+    user, methods, item = browser_complement_case()
+    user.goals = ["browser_testing"]
+    assert not rank(user=user, item=item)["eligible"]
+    methods["test_generation"].workflow_json[0]["status"] = "covered"
+    assert not rank(user=user, methods=methods, item=item)["eligible"]
+    legacy = method(task_type="test_generation", prompt_text="Check browser testing.")
+    assert not rank(user=user, methods={"test_generation": legacy}, item=item)["eligible"]
+
+
+def test_browser_complement_is_not_a_generic_capability_or_code_review_bridge():
+    """브라우저 검증 보완을 다른 작업이나 입력 검증 구현 가이드의 리뷰 지원으로 일반화하지 않는다."""
+    user, methods, item = browser_complement_case()
+    user.task_types = ["code_review"]
+    methods["test_generation"].task_type = "code_review"
+    assert not rank(user=user, methods=methods, item=item)["eligible"]
+    implementation = candidate(tags=classify_bundle({"SKILL.md": b"A guide to input validation."}))
+    assert not rank(user=profile(goals=["input_validation"]),
+        methods={"code_review": method("input_validation")}, item=implementation)["eligible"]
+
+
+def test_browser_complement_keeps_language_framework_and_tool_gates():
+    """단계 보완도 후보가 명시한 다른 환경의 전용 조건을 우회하지 않는다."""
+    for claim in ("Supports Python.", "Supports Django.", "For Claude Code only."):
+        user, methods, item = browser_complement_case("Browser automation CLI for AI agents.\n" + claim)
+        assert not rank(user=user, methods=methods, item=item)["eligible"]
+
+
+def test_browser_complement_requires_safe_candidate_capability_evidence():
+    """기능 태그만 있거나 공개할 수 없는 위치 근거만 있으면 보완 관계를 만들지 않는다."""
+    user, methods, item = browser_complement_case()
+    item[1].tags["evidence"] = []
+    item[1].tags["dimensions"]["evidence"] = []
+    assert not rank(user=user, methods=methods, item=item)["eligible"]
+    item[1].tags["dimensions"]["evidence"] = [{"dimension": "capabilities", "value": "browser_testing",
+        "path": "C:/private.txt", "line": 1, "excerpt": "Browser automation CLI for AI agents."}]
+    assert not rank(user=user, methods=methods, item=item)["eligible"]
+
+
+def test_browser_complement_links_only_the_declared_browser_gap():
+    """자동화 후보에 다른 기능이 함께 있어도 이 관계의 점수와 단계 연결은 브라우저 공백에 한정한다."""
+    user, methods, item = browser_complement_case("Browser automation CLI for AI agents.\nProvides documentation.")
+    methods["test_generation"].workflow_json.append({"id": "docs", "label": "문서 보완",
+        "capabilities": ["documentation"], "status": "gap", "weight": 5})
+    result = rank(user=user, methods=methods, item=item)
+    assert result["eligible"] and len(result["workflow_fit"]) == 1
+    assert result["workflow_fit"][0]["matched_capabilities"] == ["browser_testing"]
+    assert result["breakdown"]["workflow_gap"] == 25
+
+
+def test_real_test_generation_still_uses_same_task_relationship():
+    """실제로 테스트 작성 작업을 제공하는 후보의 기존 작업 일치 경로는 바꾸지 않는다."""
+    user, methods, item = browser_complement_case("Generate tests with browser automation.")
+    result = rank(user=user, methods=methods, item=item)
+    assert result["eligible"] and result["matches"]["relationship"] == "same_task"
+    assert result["matches"]["candidate_task_types"] == ["test_generation"]
+    assert result["breakdown"]["task_relevance"] == 18
+
+
+def test_workflow_complement_retains_other_actual_candidate_task():
+    """다른 작업 태그를 가진 후보도 단계 보완 관계와 원래 제공 작업을 구분한다."""
+    user, methods, item = browser_complement_case("Code review with browser automation.")
+    result = rank(user=user, methods=methods, item=item)
+    assert result["eligible"] and result["matches"]["relationship"] == "workflow_complement"
+    assert result["matches"]["candidate_task_types"] == ["code_review"]
+    assert item[1].tags["task_types"] == ["code_review"]
+    assert result["matches"]["task_type"] == "test_generation"
+
+
+def test_runtime_python_requirement_does_not_bias_project_language_fit():
+    """리포트 파서의 Python 실행 의존성을 피검토 코드 언어의 일치로 가점하지 않는다."""
+    item = documented_candidate("Code review with input validation.\nReport parsing requires Python 3.9+.")
+    results = [rank(user=profile(primary_language=language, goals=["input_validation"]), item=item)
+        for language in ("python", "java", "go")]
+    assert all(result["eligible"] for result in results)
+    assert len({result["score"] for result in results}) == 1
+    for result in results:
+        assert result["breakdown"]["language_fit"] == 0
+        assert result["matches"]["languages"] == []
+        assert result["matches"]["mentioned_languages"] == ["python"]
+        assert not any("프로젝트 언어 문맥과 일치" in reason for reason in result["reasons"])
+
+
+def test_incidental_framework_and_auxiliary_tools_have_no_positive_stack_fit():
+    """React 예제나 도구 사용 언급만으로 현재 프로젝트의 지원 조건을 확인했다고 하지 않는다."""
+    item = documented_candidate("Code review with input validation.\nReact examples illustrate output.\n"
+        "Uses pytest and Playwright.\nDocumentation includes Codex CLI examples.")
+    user = profile(goals=["input_validation"], context_json={"frameworks": ["react"],
+        "tools": ["codex_cli", "pytest", "playwright"]})
+    result = rank(user=user, item=item)
+    assert result["eligible"]
+    assert result["matches"]["frameworks"] == [] and result["matches"]["tools"] == []
+    assert result["matches"]["mentioned_frameworks"] == ["react"]
+    assert result["matches"]["mentioned_tools"] == ["codex_cli", "playwright", "pytest"]
+    assert result["breakdown"]["framework_fit"] == result["breakdown"]["tool_fit"] == 0
+    assert not any("사용 도구 문맥과 일치" in reason for reason in result["reasons"])
+
+
+def test_positive_stack_fit_requires_explicit_target_or_legacy_declaration():
+    """초기 제목보다 뒤의 실제 지원 선언을 사용하고 기존 가중치 및 언어별 제외를 유지한다."""
+    item = documented_candidate("# Python FastAPI Codex notes\nCode review with input validation.\n"
+        "Supports Python and FastAPI and Codex CLI.")
+    user = profile(goals=["input_validation"], context_json={"frameworks": ["fastapi"], "tools": ["codex_cli"]})
+    result = rank(user=user, item=item)
+    assert result["eligible"]
+    assert (result["breakdown"]["language_fit"], result["breakdown"]["framework_fit"],
+        result["breakdown"]["tool_fit"]) == (6, 10, 4)
+    assert result["matches"]["mentioned_languages"] == []
+    assert result["matches"]["languages"] == ["python"]
+    assert not rank(user=profile(primary_language="typescript", goals=["input_validation"]), item=item)["eligible"]
+    legacy = candidate(tags={"task_types": ["code_review"], "languages": ["python"],
+        "frameworks": ["fastapi"], "supported_tools": ["codex_cli"], "capabilities": ["input_validation"]})
+    old = rank(user=user, item=legacy)
+    assert (old["breakdown"]["language_fit"], old["breakdown"]["framework_fit"], old["breakdown"]["tool_fit"]) == (6, 10, 4)
+
+
+def test_only_weak_stack_mentions_and_task_name_cannot_qualify_recommendation():
+    """목표나 공백 없이 프로젝트와 같은 단어가 등장한 것만으로 개인 추천을 만들지 않는다."""
+    item = documented_candidate("Code review with input validation.\nThe Python helper reads files.\n"
+        "React examples.\nUses pytest and Codex CLI.")
+    user = profile(context_json={"frameworks": ["react"], "tools": ["codex_cli", "pytest"]})
+    result = rank(user=user, item=item)
+    assert not result["eligible"] and result["matches"]["confidence"] == "abstained"
+    assert all(result["breakdown"][key] == 0 for key in ("language_fit", "framework_fit", "tool_fit"))
+
+
+def test_declared_auxiliary_tool_does_not_receive_ai_runner_fit_points():
+    """보조 테스트 도구가 명시돼도 AI 실행 도구 일치 가점과는 구분한다."""
+    item = documented_candidate("Code review with input validation.\nSupports pytest.")
+    result = rank(user=profile(goals=["input_validation"], context_json={"tools": ["pytest"]}), item=item)
+    assert result["eligible"] and result["matches"]["tools"] == ["pytest"]
+    assert result["breakdown"]["tool_fit"] == 0

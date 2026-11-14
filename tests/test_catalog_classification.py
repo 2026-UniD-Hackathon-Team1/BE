@@ -99,3 +99,41 @@ def test_long_description_keeps_bounded_evidence_instead_of_losing_supported_tas
 def test_new_testing_vocabulary_does_not_turn_non_support_into_tasks(text):
     """동의어와 긴 설명 처리도 계획과 부정 및 오케스트레이션을 작업으로 만들지 않는다."""
     assert classify_bundle({"SKILL.md": text.encode()})["task_types"] == []
+
+
+def test_error_handling_review_claim_maps_to_existing_goal_without_task_expansion():
+    """오류 처리 검토 문구를 기존 목표로 연결하며 실제 코드 리뷰 명시를 유지한다."""
+    tags = classify_bundle({"SKILL.md": b"Code review.\nReport error handling gaps with context."})
+    assert tags["task_types"] == ["code_review"]
+    assert "exception_handling" in tags["capabilities"]
+    evidence = next(item for item in tags["evidence"] if item["tag"] == "exception_handling")
+    assert evidence["line"] == 2 and "error handling" in evidence["excerpt"]
+
+
+def test_new_capability_vocabulary_does_not_label_implementation_or_security_audit_as_review():
+    """기능 동의어가 있다고 구현 가이드나 일반 보안 감사를 코드 리뷰로 분류하지 않는다."""
+    for text in ("A guide to handle errors and validate inputs.",
+                 "Security audit of authentication and authorization.",
+                 "Memory safety vulnerability assessment."):
+        assert classify_bundle({"SKILL.md": text.encode()})["task_types"] == []
+
+
+@pytest.mark.parametrize("text", ["Read the documentation.", "See the project documentation.",
+                                 "Refer to the API documentation."])
+def test_legacy_capability_path_cannot_restore_reference_only_documentation(text):
+    """기존 핵심 태그 추출 경로에서도 참조 전용 문구가 문서 작성 기능으로 되살아나지 않는다."""
+    tags = classify_bundle({"SKILL.md": text.encode()})
+    assert "documentation" not in tags["capabilities"]
+    assert not any(item["tag"] == "documentation" for item in tags["evidence"])
+
+
+def test_explicit_test_strategy_is_design_without_claiming_test_code_generation():
+    """실제 전략 스킬의 설계 기능을 인식하되 명시적으로 제외한 테스트 작성은 붙이지 않는다."""
+    text = ("---\nname: test-strategy\ndescription: >-\n"
+        "  Plans risk-based test coverage for a feature.\n  Not for writing one test case.\n---\n# Test Strategy\n"
+        "Choose what to test and define release gates.")
+    tags = classify_bundle({"SKILL.md": text.encode()})
+    assert "test_design" in tags["capabilities"]
+    assert tags["task_types"] == []
+    evidence = next(item for item in tags["dimensions"]["evidence"] if item["value"] == "test_design")
+    assert evidence["line"] == 7 and evidence["excerpt"] == "# Test Strategy"

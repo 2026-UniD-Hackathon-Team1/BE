@@ -259,6 +259,22 @@ def _workflow_score(workflow, capabilities, evidence):
     return min(35, gap), max(-15, overlap), fit
 
 
+def _browser_workflow_complement(context, dimensions, evidence):
+    """전체 테스트 작성과 구분해 사용자가 명시한 브라우저 검증 공백만 보완한다."""
+    if ("test_generation" not in context["task_types"] or "browser_testing" not in dimensions["capabilities"]
+            or not any(item["dimension"] == "capabilities" and item["value"] == "browser_testing"
+                       for item in evidence)):
+        return None
+    for method in context["methods"]:
+        if method["task_type"] != "test_generation":
+            continue
+        steps = [step for step in method["workflow"] if step["source"] == "declared_workflow"
+            and step["status"] == "gap" and "browser_testing" in step["capabilities"]]
+        if steps:
+            return method, steps
+    return None
+
+
 def rank_candidate(profile, methods, environment, asset, version, change, source, now=None):
     """실행 승인이나 성능 추정 없이 후보의 작업 관련성과 확인할 조건을 반환한다."""
     context = build_context(profile, methods, environment)
@@ -267,17 +283,26 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     evidence = _evidence(tags, dimensions)
     targets, target_basis = _target_dimensions(tags, dimensions, evidence)
     effective, declared = context["effective"], context["declared"]
-    tasks = sorted(set(_names(tags.get("task_types", []))) & set(context["task_types"]))
-    matches = {key: sorted(set(dimensions[key]) & set(effective.get(key, [])))
+    candidate_tasks = _names(tags.get("task_types", []))
+    tasks = sorted(set(candidate_tasks) & set(context["task_types"]))
+    complement = _browser_workflow_complement(context, dimensions, evidence) if not tasks else None
+    route_tasks = tasks or (["test_generation"] if complement else [])
+    relevance_caps = ["browser_testing"] if complement else dimensions["capabilities"]
+    matches = {key: sorted(set(targets[key]) & set(effective.get(key, [])))
         for key in ("languages", "tools")}
-    matches["frameworks"] = _framework_matches(dimensions["frameworks"], effective["frameworks"])
-    matches["goals"] = sorted(set(dimensions["capabilities"]) & set(effective["goals"]))
-    matches.update({"task_types": tasks, "task_type": tasks[0] if tasks else None,
+    matches["frameworks"] = _framework_matches(targets["frameworks"], effective["frameworks"])
+    for key in ("languages", "frameworks", "tools"):
+        matches["mentioned_" + key] = sorted(set(dimensions[key]) - set(targets[key]))
+    matches["goals"] = sorted(set(relevance_caps) & set(effective["goals"]))
+    matches.update({"task_types": tasks, "task_type": route_tasks[0] if route_tasks else None,
+        "candidate_task_types": candidate_tasks, "relationship": "workflow_complement" if complement else "same_task",
         "capabilities": dimensions["capabilities"], "confidence": "limited",
         "target_claims": targets, "target_scope_basis": target_basis})
     excluded, uncertainties, reasons = [], [], []
-    if not tasks:
+    if not route_tasks:
         excluded.append("등록한 작업 유형과 일치하지 않음")
+    if complement:
+        uncertainties.append("테스트 코드 작성 전체 지원은 확인하지 못함")
     if _get(source, "enabled", True) is False:
         excluded.append("수집 소스가 비활성 상태임")
     if _dict(_dict(_get(version, "metadata_json")).get("repository")).get("archived") is True:
@@ -295,6 +320,10 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
         excluded.append("현재 AI 도구와 후보의 명시된 대상이 다름")
     if not candidate_runners:
         uncertainties.append("후보의 지원 AI 도구 미확인")
+    for key, label in (("languages", "언어"), ("frameworks", "프레임워크"), ("tools", "도구")):
+        if matches["mentioned_" + key]:
+            uncertainties.append(f"문서의 {label} 단순 언급은 지원 대상 확인이나 관련성 가점에 사용하지 않음: "
+                + ", ".join(matches["mentioned_" + key]))
     if set(dimensions["capabilities"]) & set(declared["excluded_capabilities"]):
         excluded.append("사용자가 제외한 기능을 포함함")
     if set(targets["tools"]) & set(declared["excluded_tools"]):
@@ -311,7 +340,7 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     for key in ("languages", "frameworks"):
         if context["observed"][key] and declared[key] and not set(context["observed"][key]) & set(declared[key]):
             uncertainties.append(f"등록한 {key}와 스캔 결과가 달라 현재 프로젝트 관측값을 우선함")
-    extra_tools = sorted(set(dimensions["tools"]) - AI_TOOLS - set(effective["tools"]))
+    extra_tools = sorted(set(targets["tools"]) - AI_TOOLS - set(effective["tools"]))
     if extra_tools:
         uncertainties.append("추가 도구의 설치 조건 확인 필요: " + ", ".join(extra_tools))
     freshness = _freshness(version, change, source, declared["prefer_recent"], now)
@@ -319,13 +348,14 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
         uncertainties.append("확인된 원본 변경 시각이 없어 최신성 가점을 부여하지 않음")
     breakdown = {"task_relevance": 18 if tasks else 0, "goal_fit": min(24, 8 * len(matches["goals"])),
         "language_fit": 6 if matches["languages"] else 0, "framework_fit": 10 if matches["frameworks"] else 0,
-        "tool_fit": 4 if matches["tools"] else 0, "method_alignment": 0,
+        "tool_fit": 4 if set(matches["tools"]) & AI_TOOLS else 0, "method_alignment": 0,
         "workflow_gap": 0, "workflow_overlap": 0,
         "freshness": freshness["bonus"]}
     selected, best = None, None
-    for task in tasks:
-        method = next((item for item in context["methods"] if item["task_type"] == task), None)
-        gap, overlap, fit = _workflow_score(method["workflow"] if method else [], dimensions["capabilities"], evidence)
+    for task in route_tasks:
+        method = complement[0] if complement else next((item for item in context["methods"] if item["task_type"] == task), None)
+        workflow = complement[1] if complement else method["workflow"] if method else []
+        gap, overlap, fit = _workflow_score(workflow, relevance_caps, evidence)
         alignment = min(24, sum(12 if item["source"] == "required_check" else 8
             for item in fit if item["source"] in {"required_check", "explicit_prompt"}))
         choice = (gap + overlap + alignment, len(fit), task, method, gap, overlap, fit, alignment)
@@ -336,7 +366,7 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
         (_, _, task, selected, breakdown["workflow_gap"], breakdown["workflow_overlap"],
          workflow_fit, breakdown["method_alignment"]) = best
         matches["task_type"] = task
-    workflow = selected["workflow"] if selected else []
+    workflow = complement[1] if complement else selected["workflow"] if selected else []
     gaps = {capability for step in workflow if step["status"] == "gap"
         for capability in step["capabilities"]}
     explicit_checks = {capability for step in workflow if step["source"] in {"required_check", "explicit_prompt"}
@@ -344,7 +374,7 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     covered = {capability for step in workflow if step["source"] == "declared_workflow" and step["status"] == "covered"
         for capability in step["capabilities"]}
     requested = set(effective["goals"]) | gaps | explicit_checks
-    candidate_caps = set(dimensions["capabilities"])
+    candidate_caps = set(relevance_caps)
     matches["requested_capabilities"] = sorted(requested)
     matches["matched_requested_capabilities"] = sorted(candidate_caps & requested)
     if not candidate_caps:
@@ -354,12 +384,14 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     if candidate_caps and candidate_caps <= covered and not candidate_caps & gaps:
         excluded.append("후보 기능을 현재 작업 단계에서 모두 수행하고 있어 새로운 보완 근거가 없음")
     has_context_fit = any(matches[key] for key in ("goals", "languages", "frameworks", "tools")) or bool(workflow_fit)
-    if tasks and not has_context_fit:
+    if route_tasks and not has_context_fit:
         excluded.append("작업 유형 외에 개인 작업과 연결할 근거가 부족하여 추천을 보류함")
         matches["confidence"] = "abstained"
     elif has_context_fit:
         matches["confidence"] = "contextual"
-    if tasks:
+    if complement:
+        reasons.append("등록한 브라우저 검증 단계를 보완할 후보로 연결함")
+    elif tasks:
         reasons.append("현재 " + ("코드 리뷰" if matches["task_type"] == "code_review" else "테스트 작성") + " 작업과 관련 있음")
     if matches["goals"]:
         reasons.append("등록한 목표와 연결되는 기능: " + ", ".join(CAP_LABELS[item] for item in matches["goals"]))

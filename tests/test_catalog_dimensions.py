@@ -318,3 +318,69 @@ def test_go_context_match_does_not_consume_its_explicit_support_verb(claim):
     result = _extract(claim)
     assert any(item["dimension"] == "languages" and item["value"] == "go"
         for item in result["target_evidence"])
+
+
+@pytest.mark.parametrize("text,capability", [
+    ("Report error handling gaps with context.", "exception_handling"),
+    ("Handle errors consistently.", "exception_handling"),
+    ("Handling unexpected exceptions at the boundary.", "exception_handling"),
+    ("오류 처리를 검토한다.", "exception_handling"),
+    ("Validate inputs before using them.", "input_validation"),
+    ("Validate untrusted data at the boundary instead of casting it.", "input_validation"),
+    ("Review branch coverage.", "test_coverage"),
+    ("Inspect line coverage and statement coverage.", "test_coverage"),
+    ("Analyze coverage gaps and coverage reports.", "test_coverage"),
+    ("Write a test that reproduces the bug.", "regression_test"),
+    ("Add a test to reproduce a failure.", "regression_test"),
+    ("Create a test reproducing the reported bug.", "regression_test"),
+    ("Review schema changes and SQL migrations.", "database_changes"),
+    ("Review authentication and authorization.", "api_security"),
+    ("Perform access-control checks.", "api_security"),
+])
+def test_explicit_procedure_synonyms_keep_canonical_capability_and_original_quote(text, capability):
+    """실제 문서의 명시적인 절차 동의어를 기능으로 연결하고 원문 위치를 보존한다."""
+    result = _extract(text)
+    assert capability in result["capabilities"]
+    evidence = next(item for item in result["evidence"] if item["value"] == capability)
+    assert evidence["line"] == 1 and evidence["excerpt"] in text
+
+
+@pytest.mark.parametrize("text,capability", [
+    ("No error handling is provided.", "exception_handling"),
+    ("We plan to handle errors.", "exception_handling"),
+    ("Untrusted data is an input to this report.", "input_validation"),
+    ("Input validation will be added later.", "input_validation"),
+    ("Coverage reports are not supported.", "test_coverage"),
+    ("Hunt regressions in an application.", "regression_test"),
+    ("Reproduce the bug manually.", "regression_test"),
+    ("No test that reproduces the bug is generated.", "regression_test"),
+    ("SQL migrations are planned.", "database_changes"),
+    ("Assess generic vulnerabilities and memory safety.", "api_security"),
+    ("Authentication and authorization are not supported.", "api_security"),
+])
+def test_synonyms_do_not_infer_missing_actions_or_ignore_negative_scope(text, capability):
+    """관련 명사나 일반 결함 조사만으로 절차를 추론하지 않고 부정과 계획도 제외한다."""
+    assert capability not in _extract(text)["capabilities"]
+
+
+@pytest.mark.parametrize("text", [
+    "Read the documentation before continuing.",
+    "See the API documentation for details.",
+    "Refer to the project documentation.",
+    "Consult framework documentation.",
+    "Use the documentation to understand the project.",
+])
+def test_reading_references_is_not_documentation_production(text):
+    """문서를 참고하라는 지시를 문서 작성 기능으로 오인하지 않는다."""
+    assert "documentation" not in _extract(text)["capabilities"]
+
+
+@pytest.mark.parametrize("text", [
+    "Generate documentation from the public API.",
+    "Read source files and write documentation.",
+    "See how to create documentation from the schema.",
+    "Read the documentation and then generate documentation.",
+])
+def test_documentation_creation_survives_distinct_reference_instruction(text):
+    """실제 문서 생성 동작이 있으면 다른 참조 지시 때문에 근거를 잃지 않는다."""
+    assert "documentation" in _extract(text)["capabilities"]
