@@ -59,7 +59,7 @@ def test_pair_heartbeat_restart_and_auth_boundaries(client, database):
 def test_pairing_code_includes_pypi_install_command(client):
     response = client.post("/api/agent/pairing-code", headers=HEADERS)
     assert response.status_code == 200
-    assert response.json()["install_command"] == "python -m pip install galtalka-agent"
+    assert response.json()["install_command"] == "uv tool install galtalka-agent"
     assert response.json()["command"] is None
 
 

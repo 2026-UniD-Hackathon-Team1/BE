@@ -142,7 +142,7 @@ def agent_router(sessions, web_auth):
             session.add(AgentPairingCode(code_hash=secret_hash(code), profile_id=profile_id, expires_at=expires_at))
         response.headers["Cache-Control"] = "no-store"
         return PairingCodeResponse(code=code[:4] + "-" + code[4:], expires_at=expires_at,
-                                   install_command="python -m pip install galtalka-agent")
+                                   install_command="uv tool install galtalka-agent")
 
     @router.post("/pair", response_model=PairResponse, summary="연결 코드를 기기 토큰으로 교환")
     def pair(body: PairInput, request: Request, response: Response):
