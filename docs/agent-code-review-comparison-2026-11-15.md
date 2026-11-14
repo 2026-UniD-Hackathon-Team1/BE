@@ -26,4 +26,6 @@
 
 첫 실행은 Codex가 심각도를 `critical`로 반환해 양쪽 모두 실패 처리됐다. PC 결과 검증과 서버 계약은 `high | medium | low`만 허용하지만 생성 JSON 스키마가 이를 제한하지 않았다. 스키마에 허용값을 명시한 뒤 재실행해 두 결과가 `completed`로 끝났다.
 
-Railway 카탈로그에는 같은 고정 커밋의 스킬을 수집했다. 후보 버전은 `ver_f2a23704a7656596b561d6b8ae493ebf`, 해시와 출처는 검증됐다. `adapter_review_status=missing`, `support_level=information_only`라서 **Railway의 `/api/comparisons` 실행은 아직 불가능**하다. 검토·승인된 `CandidateAdapter`가 준비된 다음 배포 서버와 PC의 전체 비교 왕복을 검증해야 한다.
+Railway 카탈로그에는 같은 고정 커밋의 스킬을 수집했다. 후보 버전은 `ver_f2a23704a7656596b561d6b8ae493ebf`, 해시와 출처는 검증됐다. 운영자 승인 API로 `support_level=comparable`을 기록했다.
+
+배포 Railway와 macOS PC의 실제 왕복 비교 `cmp_d6e52bcdb588452b82f02e9ce53ac441`은 `status=done`으로 저장됐다. baseline과 candidate 모두 `completed`, 후보 스킬 사용은 `confirmed`였으며 각각 5건을 발견했다. 두 결과의 문구와 묶음은 달랐지만 핵심 발견 항목은 같았다. 사용자 선택은 저장하지 않았고, 테스트 기기는 해제했다. 스킬 적용·복원은 `applicable` 승인이 없어 실행하지 않았다.

@@ -45,4 +45,8 @@ Codex 실행 작업공간과 원본 JSONL은 PC의 `<승인 프로젝트>/.galta
 ## 확인 범위
 
 PostgreSQL API ↔ 연결 프로그램 ↔ 가짜 Codex 왕복 테스트와 로컬 PC의 실제 Codex 두 실행을
-확인했다. 배포 Railway와 사용자 PC 사이의 실기기 왕복은 아직 확인하지 않았다.
+확인했다. 2026-11-15에는 배포 Railway ↔ macOS 연결 프로그램 ↔ 실제 Codex 사이에서
+연결·환경 스캔·입력 등록·비교 결과 저장까지 확인했다. 비교 `cmp_d6e52bcdb588452b82f02e9ce53ac441`은
+`status=done`, baseline과 candidate 모두 `completed`, 후보 스킬 사용은 `confirmed`였다.
+사용자 선택과 적용·복원은 이 배포 실기기 검증에서 실행하지 않았다. 후보의 승인 수준은
+`comparable`이며 적용에는 별도 `applicable` 승인이 필요하다.
