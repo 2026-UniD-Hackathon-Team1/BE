@@ -13,6 +13,7 @@ from galtalka_agent.config import (AgentConfig, AgentError, approved_root, defau
 from galtalka_agent.worker import AgentRunner
 from galtalka_agent.scan import scan
 from galtalka_agent.comparison_inputs import snapshot_inputs_job
+from galtalka_agent.comparison_run import run_comparison_job
 from galtalka_agent.skill_switch import apply_job, rollback_job, recover_interrupted
 
 
@@ -42,6 +43,7 @@ async def run(args, transport=None):
         try:
             await AgentRunner(client, config, args.config,
                 handlers={"scan": scan, "snapshot_inputs": snapshot_inputs_job,
+                    "run_comparison": run_comparison_job,
                     "apply": apply_job, "rollback": rollback_job}).run(once=args.once)
         finally:
             await client.close()
