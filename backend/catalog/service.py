@@ -139,6 +139,7 @@ class CatalogCollector:
                 if version is None:
                     version = AssetVersion(id=version_id, asset_id=asset_id, revision=snapshot.commit_sha,
                         bundle_sha256=digest, metadata_json={"bundle": payload, "repository": snapshot.metadata,
+                        "metadata_observed_at": next_state.get("metadata_observed_at"),
                         "source_verified": True, "classification_status": "pending", "support_level": "information_only",
                         "source_url": f"https://github.com/{snapshot.repository}/tree/{snapshot.commit_sha}/" + quote(bundle.folder, safe="/")},
                         tags={"task_types": [], "capabilities": [], "languages": ["unknown"], "supported_tools": [], "evidence": []})

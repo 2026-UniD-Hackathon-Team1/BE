@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from backend.schemas import TagEvidence
+from backend.catalog.schemas import SourceMetadata
 
 
 class PermissionEvidence(BaseModel):
@@ -47,6 +48,7 @@ class CandidateDetail(BaseModel):
     source_verification: Literal["verified", "unverified", "demo"]
     integrity_status: Literal["verified", "unknown", "mismatch", "invalid"]
     maintainer: Maintainer
+    source_metadata: SourceMetadata = Field(default_factory=SourceMetadata)
     compatibility: Literal["confirmed", "unknown", "incompatible"]
     compatibility_reasons: list[str]
     permissions: CandidatePermissions

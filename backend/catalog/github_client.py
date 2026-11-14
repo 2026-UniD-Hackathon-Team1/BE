@@ -6,11 +6,13 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import httpx
 
 from backend.catalog.config import RepositoryConfig, validate_repo_path
+from backend.catalog.metadata import repository_facts
 
 MAX_FILE_BYTES = 1_000_000
 MAX_BUNDLE_BYTES = 4_000_000
@@ -180,6 +182,7 @@ class GithubClient:
             metadata = {
                 "description": repo.get("description"), "default_branch": branch,
                 "language": repo.get("language"), "archived": repo.get("archived", False),
+                "facts": repository_facts(repo, commit),
                 "releases": [{"tag_name": release["tag_name"], "published_at": release.get("published_at")}
                              for release in releases],
             }
@@ -190,7 +193,8 @@ class GithubClient:
             if len(folders) > 2000:
                 raise CollectionError("too_many_skills")
             return RepositoryPlan(config.repository, {"commit_sha": sha, "tree_sha": tree_sha,
-                "metadata": metadata, "folders": folders, "scope": sorted(config.skill_folders), "next": 0}, entries)
+                "metadata": metadata, "metadata_observed_at": datetime.now(timezone.utc).isoformat(),
+                "folders": folders, "scope": sorted(config.skill_folders), "next": 0}, entries)
         except (KeyError, TypeError, IndexError, AttributeError, ValueError):
             raise CollectionError("invalid_payload") from None
 

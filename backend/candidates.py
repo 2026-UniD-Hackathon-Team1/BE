@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from backend.candidate_schemas import CandidateDetail, Maintainer
+from backend.candidate_schemas import CandidateDetail, Maintainer, SourceMetadata
+from backend.catalog.metadata import manifest_license, public_facts
 from backend.catalog.inspection import PERMISSION_LABELS, inspect_bundle, public_url, verified_source
 from backend.models import (AgentDevice, Asset, AssetVersion, CandidateAdapter, ChangeEvent,
                             Environment, Recommendation, Source)
@@ -118,6 +119,9 @@ def candidate_detail(session, version, profile_id):
     if repository.get("archived") is True:
         signals["archived_repository"] = "원본 저장소가 보관 상태입니다."
     current = source.sync_state.get("current_versions", {}).get(asset.id)
+    source_metadata = SourceMetadata(**public_facts(metadata, verified))
+    declared_license = (manifest_license(metadata) if asset.kind == "skill" else source_metadata.repository_license
+                        ) if verified and inspection["integrity_status"] == "verified" else None
     related = session.scalar(select(Recommendation.reasons).join(ChangeEvent, ChangeEvent.id == Recommendation.change_id)
         .where(Recommendation.profile_id == profile_id, ChangeEvent.to_version_id == version.id)
         .order_by(Recommendation.updated_at.desc()).limit(1))
@@ -127,7 +131,9 @@ def candidate_detail(session, version, profile_id):
         published_at=change.published_at if change else None, first_seen_at=change.first_seen_at if change else None,
         verified_source_at=version.verified_source_at if verified else None,
         provenance="community" if verified else "unverified", source_verification="demo" if demo else "verified" if verified else "unverified",
-        integrity_status=inspection["integrity_status"], maintainer=Maintainer(),
+        integrity_status=inspection["integrity_status"], maintainer=Maintainer(license=declared_license,
+            last_updated_at=source_metadata.revision_committed_at if asset.kind == "repo" else None),
+        source_metadata=source_metadata,
         compatibility=compatible, compatibility_reasons=reasons, permissions=permissions,
         risk_signals=list(signals.values()), risk_signal_codes=list(signals),
         support_level=approved.support_level if approved else "information_only",

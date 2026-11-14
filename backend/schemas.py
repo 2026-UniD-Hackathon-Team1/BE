@@ -2,6 +2,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from backend.catalog.schemas import SourceMetadata
 
 
 class ErrorDetail(BaseModel):
@@ -122,6 +123,7 @@ class LatestComparison(BaseModel):
 
 
 class RecommendationCard(BaseModel):
+    source_metadata: SourceMetadata = Field(default_factory=SourceMetadata)
     recommendation_id: str
     candidate_version_id: str
     adapter_id: str | None

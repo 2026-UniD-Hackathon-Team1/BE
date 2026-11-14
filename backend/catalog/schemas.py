@@ -4,6 +4,16 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class SourceMetadata(BaseModel):
+    publisher: str | None = Field(default=None, description="저장소 게시 계정이며 실제 스킬 작성자와 구분")
+    publisher_url: str | None = None
+    repository_license: str | None = Field(default=None, description="수집 당시 저장소 API의 선언이며 개별 스킬의 라이선스 확인과 구분")
+    repository_created_at: str | None = None
+    repository_pushed_at: str | None = None
+    revision_committed_at: str | None = Field(default=None, description="고정 저장소 커밋 시각이며 스킬 파일의 최종 수정 시각과 구분")
+    metadata_observed_at: str | None = None
+
+
 class RepositoryProgress(BaseModel):
     repository: str
     status: Literal["done", "partial", "failed", "disabled"]

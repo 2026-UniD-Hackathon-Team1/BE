@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 
 from backend.catalog.service import stable_id
+from backend.catalog.metadata import public_facts
 from backend.catalog.inspection import inspect_bundle, public_url, verified_source
 from backend.models import (Asset, AssetVersion, CandidateAdapter, ChangeEvent, Comparison,
                             Environment, Profile, Recommendation, RecommendationDecision,
@@ -109,7 +110,10 @@ def recommendation_router(sessions, auth):
                 comparison = session.scalar(select(Comparison).where(
                     Comparison.profile_id == profile_id, Comparison.recommendation_id == recommendation_id)
                     .order_by(Comparison.created_at.desc()))
+                metadata_source = session.get(Source, asset.source_id)
                 items.append(RecommendationCard(recommendation_id=recommendation_id,
+                    source_metadata=public_facts(version.metadata_json, verified_source(version.metadata_json,
+                        version.revision, metadata_source.kind, change.source_url, metadata_source.url)),
                     candidate_version_id=version.id, adapter_id=adapter.id if comparable else None,
                     work_method_id=method.id if method else None,
                     work_method_version=method.version if method else None,
