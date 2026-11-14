@@ -11,7 +11,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.db import make_engine, session_factory
 from backend.settings import database_url as configured_database_url
-from backend.auth import local_auth
+from backend.auth import web_auth
+from backend.login import login_router
 from backend.agent import agent_router
 from backend.agent_jobs import job_router
 from backend.environment import environment_router
@@ -56,7 +57,8 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
         item.strip() for item in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",") if item.strip()]
     engine = make_engine(url)
     sessions = session_factory(engine)
-    auth = local_auth(local_token if local_token is not None else os.environ.get("APP_LOCAL_TOKEN"))
+    # 로그인으로 받은 세션을 우선 쓰고, 없으면 기존 로컬 토큰(X-Local-Token)을 받는다
+    auth = web_auth(sessions, local_token if local_token is not None else os.environ.get("APP_LOCAL_TOKEN"))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -67,16 +69,18 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
             engine.dispose()
 
     app = FastAPI(title="갈아탈까 API", version="0.1.0", lifespan=lifespan,
-        description="공통 카탈로그와 로컬 프로필, 작업 방식 및 추천 API입니다. 개인 API는 Authorize에 X-Local-Token을 입력하세요.",
+        description="공통 카탈로그와 로컬 프로필, 작업 방식 및 추천 API입니다. 개인 API는 로그인 세션(Bearer, POST /api/auth/login 으로 발급) 또는 X-Local-Token으로 인증합니다.",
         openapi_tags=[{"name": "system", "description": "상태 확인"},
                       {"name": "catalog", "description": "발견한 후보와 수집 상태. 성능 검증 결과가 아닙니다."},
-                      {"name": "profile", "description": "내 작업 환경 등록과 온보딩 상태 조회. 로컬 단일 사용자용입니다."},
+                      {"name": "auth", "description": "회원가입과 로그인. 받은 세션 토큰을 Authorization: Bearer 로 보내 개인 API를 부릅니다."},
+                      {"name": "profile", "description": "내 작업 환경 등록과 온보딩 상태 조회. 로그인 사용자별로 나뉩니다."},
                       {"name": "work-methods", "description": "기존 작업 방식의 불변 버전 등록과 조회"},
                       {"name": "recommendations", "description": "작업 관련성 추천과 카드 상태 변경. 점수는 성능 점수가 아닙니다."}],
         responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "PUT", "POST", "PATCH", "DELETE"],
-                           allow_headers=["Content-Type", "X-Local-Token", "Idempotency-Key"])
+                           allow_headers=["Content-Type", "X-Local-Token", "Idempotency-Key", "Authorization"])
+    app.include_router(login_router(sessions, auth))
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
     app.include_router(comparison_router(sessions, auth, wait_timeout=input_wait_timeout))

@@ -78,7 +78,7 @@ def test_candidate_contract_auth_unknowns_and_no_private_payload(candidate):
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/api/candidates/{version_id}"]["get"]
     assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("CandidateDetail")
-    assert operation["security"] == [{"APIKeyHeader": []}]
+    assert operation["security"] == [{"LoginSession": []}, {"APIKeyHeader": []}]
 
 
 @pytest.mark.parametrize("reviewed,digest,status", [(False, None, "unreviewed"), (True, "0" * 64, "hash_mismatch")])
