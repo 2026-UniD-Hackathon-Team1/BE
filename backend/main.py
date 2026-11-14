@@ -15,6 +15,7 @@ from backend.auth import local_auth
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.work_methods import work_method_router
+from backend.comparisons import comparison_router
 from backend.schemas import CandidateList, CandidateSummary, ErrorResponse, HealthResponse, SourceList, SourceSummary
 
 def candidate_rows(session):
@@ -67,6 +68,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
                            allow_headers=["Content-Type", "X-Local-Token"])
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
+    app.include_router(comparison_router(sessions, auth))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):
