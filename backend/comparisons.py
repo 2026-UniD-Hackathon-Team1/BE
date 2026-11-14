@@ -270,17 +270,20 @@ def comparison_router(sessions, auth, *, wait_timeout=30.0):
 
     @router.get("/api/comparisons", summary="진행 중인 비교 목록 (홈의 '진행 중인 비교')")
     def active_list(active: bool = Query(True), profile_id: str = Depends(auth)):
-        """대기·실행 중인 비교만 최신순으로 돌려준다. 끝난 비교는 이력에서 본다."""
+        """내 진행 중 비교의 기기 보고를 동기화하고 완료된 항목은 목록에서 제외한다."""
         if not active:
             raise HTTPException(422, detail={"code": "active_only", "message": "진행 중인 비교만 조회할 수 있습니다."})
-        with sessions() as session:
+        with sessions.begin() as session:
             rows = session.execute(select(Comparison, Asset.display_name)
                 .join(AssetVersion, AssetVersion.id == Comparison.candidate_version_id)
                 .join(Asset, Asset.id == AssetVersion.asset_id)
                 .where(Comparison.profile_id == profile_id, Comparison.status.in_(["queued", "running", "evaluating"]))
                 .order_by(Comparison.created_at.desc()).limit(20)).all()
+            for comparison, _ in rows:
+                sync_agent_comparison(session, comparison)
             return [{"comparison_id": c.id, "change_title": name, "candidate_label": name,
-                     "status": c.status, "created_at": c.created_at} for c, name in rows]
+                     "status": c.status, "created_at": c.created_at} for c, name in rows
+                    if c.status in {"queued", "running", "evaluating"}]
 
     @router.get("/api/comparisons/{comparison_id}", response_model=ComparisonDetail)
     def detail(comparison_id: str, profile_id: str = Depends(auth)):
