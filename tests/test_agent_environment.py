@@ -14,6 +14,7 @@ from backend.main import create_app
 from backend.models import AgentJob, Environment
 from galtalka_agent.client import AgentClient
 from galtalka_agent.config import AgentConfig
+from galtalka_agent.comparison_inputs import snapshot_inputs_job
 from galtalka_agent.scan import collect_scan, scan
 from galtalka_agent.worker import AgentRunner
 
@@ -23,7 +24,8 @@ WEB = {"X-Local-Token": "test-local-token"}
 @pytest.fixture
 def environment_api(database):
     """실제 PostgreSQL과 짧은 대기 시간을 사용하는 웹 및 기기 인증을 준비한다."""
-    app = create_app(database_url=database[2].attributes["database_url"], local_token="test-local-token", agent_wait_timeout=0)
+    app = create_app(database_url=database[2].attributes["database_url"], local_token="test-local-token",
+        agent_wait_timeout=0, input_wait_timeout=0)
     with TestClient(app) as client:
         client.put("/api/profile", headers=WEB, json={"role": "developer", "primary_language": "python", "task_types": ["code_review"]})
         code = client.post("/api/agent/pairing-code", headers=WEB).json()["code"]
@@ -81,8 +83,20 @@ def test_scan_timeout_requery_persistence_and_refresh(environment_api, database,
         """기기 환경을 서버 로컬 경로로 읽으려는 호출을 금지한다."""
         pytest.fail("agent path must not be opened on server")
     monkeypatch.setattr("backend.comparisons.register_input", forbidden)
-    response = client.post("/api/inputs", headers=WEB, json={"relative_paths": ["app.py"], "task_type": "code_review"})
-    assert response.status_code == 409 and response.json()["error"]["code"] == "AGENT_INPUTS_NOT_READY"
+    (tmp_path / "app.py").write_text("print('review me')\n", encoding="utf-8")
+    response = client.post("/api/inputs", headers=WEB,
+        json={"relative_paths": ["app.py"], "task_type": "code_review"})
+    assert response.status_code == 202
+    input_id, input_job_id = response.json()["input_id"], response.json()["job_id"]
+    claim = client.get("/api/agent/jobs", headers={"Authorization": "Bearer " + token}).json()
+    assert claim["job_id"] == input_job_id and claim["kind"] == "snapshot_inputs"
+    input_manifest = asyncio.run(snapshot_inputs_job(claim["payload"], tmp_path.resolve()))
+    reported = client.post(f"/api/agent/jobs/{input_job_id}/result",
+        headers={"Authorization": "Bearer " + token},
+        json={"claim_token": claim["claim_token"], "status": "done", "result": input_manifest})
+    assert reported.status_code == 204
+    registered = client.get(f"/api/inputs/{input_id}", headers=WEB)
+    assert registered.status_code == 200 and registered.json() == input_manifest
     config.write_text('model="gpt-second-example"', encoding="utf-8")
     assert client.post("/api/environment/scan", headers={**WEB, "Idempotency-Key": "scan-second"}, json=body).status_code == 504
     run_pc(client, token, tmp_path.resolve(), tmp_path / "agent-config.json")

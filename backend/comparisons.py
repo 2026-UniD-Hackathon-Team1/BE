@@ -1,12 +1,14 @@
 """Local comparison requests and result viewing."""
 import os
+import asyncio
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -14,6 +16,8 @@ from backend.models import Asset, AssetVersion, CandidateAdapter, Comparison, En
 from backend.runtime.comparison import execute_comparison
 from backend.input_store import register_input, load_input
 from backend.comparison_contract import ComparisonDetail
+from backend.agent_jobs import JobSpec, enqueue_job, read_job
+from backend.models import AgentJob
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "experiments" / "skill_eval" / "fixture"
@@ -44,18 +48,57 @@ class InputRegistration(BaseModel):
     task_type: Literal["code_review", "test_generation"]
 
 
-def comparison_router(sessions, auth):
+def comparison_router(sessions, auth, *, wait_timeout=30.0):
+    if not 0 <= wait_timeout <= 30:
+        raise ValueError("Input wait timeout must be between 0 and 30 seconds")
     router = APIRouter(tags=["comparisons"])
 
+    def input_outcome(profile_id, input_id):
+        with sessions() as session:
+            job = session.scalar(select(AgentJob).where(AgentJob.profile_id == profile_id,
+                AgentJob.kind == "snapshot_inputs", AgentJob.request_key == "input:" + input_id))
+            if job is None:
+                raise HTTPException(404, detail={"code": "input_not_found", "message": "비교 입력을 찾을 수 없습니다."})
+            job_id = job.id
+            expected_task = job.payload["task_type"]
+            expected_paths = job.payload["relative_paths"]
+        job = read_job(sessions, profile_id, job_id)
+        if job.status in {"queued", "running"}:
+            return {"input_id": input_id, "job_id": job_id, "status": job.status}
+        if job.status != "done":
+            raise HTTPException(409, detail={"code": "input_snapshot_failed", "message": "PC에서 비교 입력을 등록하지 못했습니다."})
+        result = job.result or {}
+        if (not isinstance(result, dict) or set(result) != {"input_id", "task_type", "relative_paths", "input_sha256"}
+            or result["input_id"] != input_id or result["task_type"] != expected_task
+            or result["relative_paths"] != expected_paths
+            or not isinstance(result["input_sha256"], str) or len(result["input_sha256"]) != 64):
+            raise HTTPException(409, detail={"code": "invalid_input_snapshot", "message": "PC의 비교 입력 결과를 확인해 주세요."})
+        return result
+
     @router.post("/api/inputs", status_code=201)
-    def register(body: InputRegistration, profile_id: str = Depends(auth)):
+    async def register(body: InputRegistration, response: Response, profile_id: str = Depends(auth)):
         with sessions() as session:
             environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
             if environment is None:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "먼저 작업 경로를 승인해 주세요."})
             root = Path(environment.scan_root)
-            if environment.device_id is not None:
-                raise HTTPException(409, detail={"code": "AGENT_INPUTS_NOT_READY", "message": "연결 프로그램의 입력 수집 기능을 준비 중입니다."})
+            agent_backed = environment.device_id is not None
+        if agent_backed:
+            input_id = "input_" + uuid4().hex
+            spec = JobSpec(kind="snapshot_inputs", request_key="input:" + input_id,
+                payload={"schema_version": 1, "input_id": input_id, "task_type": body.task_type,
+                    "relative_paths": body.relative_paths, "confirmed_upload_scope": True})
+            await asyncio.to_thread(enqueue_job, sessions, profile_id, spec)
+            deadline = time.monotonic() + wait_timeout
+            while True:
+                value = await asyncio.to_thread(input_outcome, profile_id, input_id)
+                if "input_sha256" in value:
+                    return value
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    response.status_code = 202
+                    return value
+                await asyncio.sleep(min(0.25, remaining))
         try:
             manifest = register_input(root, body.relative_paths, ROOT / "runtime" / "inputs", body.task_type)
         except (ValueError, OSError) as error:
@@ -69,6 +112,13 @@ def comparison_router(sessions, auth):
         manifest = register_input(FIXTURE, ["app.py"], ROOT / "runtime" / "inputs", task_type)
         return [{"suggestion_id": manifest["input_id"], "kind": "fixture", "label": "코드 리뷰 예제",
                  "meta": "파일 1개", "relative_paths": ["app.py"], "excluded_paths": []}]
+
+    @router.get("/api/inputs/{input_id}")
+    def input_status(input_id: str, response: Response, profile_id: str = Depends(auth)):
+        value = input_outcome(profile_id, input_id)
+        if "input_sha256" not in value:
+            response.status_code = 202
+        return value
 
     def run_job(comparison_id: str, method_prompt: str, bundle: str, digest: str,
                 model: str, runner_version: str):
