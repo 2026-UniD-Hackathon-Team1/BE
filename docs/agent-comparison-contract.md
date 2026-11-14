@@ -3,6 +3,16 @@
 `code_review` 입력 1~3건에 대해 동일한 PC와 Codex 모델로 기존 방식과 후보 스킬을 실행한다.
 시스템은 승자를 정하지 않으며, FE는 두 결과를 나란히 표시한 뒤 사용자의 선택을 저장한다.
 
+## 운영자 후보 승인
+
+외부 수집 후보는 기본적으로 정보 제공 전용이다. 운영자는 고정 버전의 출처와 번들을 검토한 뒤
+`POST /api/candidates/{version_id}/approve-comparison`을 `X-Local-Token`으로 호출한다.
+본문은 `{"expected_bundle_sha256":"<후보 상세의 64자 해시>","confirmed":true}`다.
+서버는 공개 원본의 고정 커밋, 스킬 manifest와 해시, 코드 리뷰 분류, 실행 파일과
+명령·네트워크·쓰기 도구 선언 여부를 확인한다. 통과하면 `support_level=comparable`인
+Codex 코드 리뷰 어댑터를 기록한다. 같은 버전·해시의 재요청은 같은 승인을 반환한다.
+이 단계는 **비교만** 허용하며 적용에는 별도 `applicable` 승인이 필요하다.
+
 ## 입력 등록
 
 1. 연결 프로그램을 `galtalka run`으로 실행한다. heartbeat의 `codex_ready=true`가 비교 시작 조건이다.

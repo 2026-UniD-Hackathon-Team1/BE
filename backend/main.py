@@ -91,7 +91,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(agent_router(sessions, auth))
     app.include_router(job_router(sessions, auth))
     app.include_router(environment_router(sessions, auth, wait_timeout=agent_wait_timeout))
-    app.include_router(candidate_router(sessions, auth))
+    app.include_router(candidate_router(sessions, auth, operator))
     app.include_router(catalog_router(sessions, operator))
     app.include_router(refresh_router(sessions, operator))
 

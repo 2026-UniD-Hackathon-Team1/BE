@@ -54,6 +54,51 @@ def add_adapter(sessions, *, reviewed=True, digest=None, name="adapter-real", le
             permissions={"file_read": True, "private_path": "C:/TOP_SECRET", "network": ["https://TOP_SECRET"]}, runtime={}))
 
 
+def test_operator_can_approve_exact_safe_skill_for_comparison(candidate):
+    client, sessions = candidate
+    original = client.get("/api/candidates/ver-real", headers=HEADERS).json()["bundle_sha256"]
+    url = "/api/candidates/ver-real/approve-comparison"
+    assert client.post(url, json={"expected_bundle_sha256": original, "confirmed": True}).status_code == 401
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": "0" * 64,
+        "confirmed": True}).status_code == 409
+    unsafe = client.post(url, headers=HEADERS, json={"expected_bundle_sha256": original,
+        "confirmed": True})
+    assert unsafe.status_code == 409 and unsafe.json()["error"]["code"] == "candidate_bundle_unsafe"
+
+    bundle = {"files": {"SKILL.md": base64.b64encode(
+        b"---\nname: code-review\n---\nReview app.py for security and correctness.\n").decode()}}
+    digest = hashlib.sha256(json.dumps(bundle, sort_keys=True, ensure_ascii=True,
+        separators=(",", ":")).encode()).hexdigest()
+    with sessions.begin() as session:
+        version = session.get(AssetVersion, "ver-real")
+        version.bundle_sha256 = digest
+        version.metadata_json = {**version.metadata_json, "bundle": bundle}
+
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": False}).status_code == 422
+    approved = client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": True})
+    assert approved.status_code == 201, approved.text
+    value = approved.json()
+    assert value["candidate_version_id"] == "ver-real"
+    assert value["support_level"] == "comparable" and value["approved_bundle_sha256"] == digest
+    assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
+        "confirmed": True}).json() == value
+    assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["support_level"] == "comparable"
+    with sessions() as session:
+        adapter = session.scalar(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == "ver-real"))
+        assert adapter.reviewed and adapter.supported_tasks == ["code_review"]
+        assert adapter.runtime == {}
+    with sessions.begin() as session:
+        session.add(AgentDevice(id="agent-ready", profile_id="local", token_hash="ready-hash",
+            device_name="test", agent_version="test", is_primary=True, codex_ready=True,
+            codex_version="codex-cli test", last_seen_at=utc_now()))
+        session.add(Environment(id="env-ready", profile_id="local", device_id="agent-ready",
+            runner="codex_cli", runner_version="codex-cli test", model_id="fixed-model",
+            installed_skills=[], settings_hash="x", scan_root="agent://agent-ready/scan"))
+    assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["compatibility"] == "confirmed"
+
+
 def test_candidate_contract_auth_unknowns_and_no_private_payload(candidate):
     """출처와 권한 계약을 제공하되 공식성 및 개선 효과를 추측하거나 원문을 노출하지 않는다."""
     client, _ = candidate
