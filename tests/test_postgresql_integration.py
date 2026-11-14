@@ -3,6 +3,8 @@ import os
 from uuid import uuid4
 
 import pytest
+from concurrent.futures import ThreadPoolExecutor
+from fastapi.testclient import TestClient
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
@@ -13,6 +15,7 @@ from sqlalchemy.schema import CreateSchema, DropSchema
 from backend.db import make_engine, session_factory
 from backend.models import ApplyRecord, Base, Comparison, EventLog, Finding, Run, Snapshot, WorkMethod
 from backend.seed import seed
+from backend.main import create_app
 
 
 @pytest.fixture
@@ -79,3 +82,25 @@ def test_unified_catalog_comparison_and_apply_schema(postgres_database):
     assert inspect(engine).get_table_names() == ["alembic_version"]
     command.upgrade(config, "head")
     assert set(Base.metadata.tables) <= set(inspect(engine).get_table_names())
+
+
+def test_agent_pairing_concurrency_and_revocation_on_postgres(postgres_database):
+    """실제 DB의 동시 코드 교환과 영속 요청 제한 및 토큰 무효화를 검증한다."""
+    _, _, config = postgres_database
+    headers = {"X-Local-Token": "test-local-token"}
+    with TestClient(create_app(database_url=config.attributes["database_url"], local_token="test-local-token")) as client:
+        assert client.put("/api/profile", headers=headers, json={"role": "developer", "primary_language": "python",
+            "task_types": ["code_review"]}).status_code == 200
+        code = client.post("/api/agent/pairing-code", headers=headers).json()["code"]
+        body = {"code": code, "device_name": "test-device", "agent_version": "0.1.0"}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(executor.map(lambda _: client.post("/api/agent/pair", json=body), range(2)))
+        assert sorted(response.status_code for response in responses) == [200, 400]
+        token = next(response.json()["agent_token"] for response in responses if response.status_code == 200)
+        assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + token}, json={}).status_code == 204
+        assert client.delete("/api/agent", headers=headers).status_code == 204
+        assert client.post("/api/agent/heartbeat", headers={"Authorization": "Bearer " + token}, json={}).status_code == 401
+        for _ in range(8):
+            assert client.post("/api/agent/pair", json=body).status_code == 400
+        assert client.post("/api/agent/pair", json=body).status_code == 429
+    command.check(config)

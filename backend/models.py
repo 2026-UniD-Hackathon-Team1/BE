@@ -26,6 +26,36 @@ class Profile(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utc_now)
 
 
+class AgentPairingCode(Base):
+    __tablename__ = "agent_pairing_code"
+    code_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profile.id"), index=True)
+    expires_at: Mapped[str] = mapped_column(String)
+    consumed_at: Mapped[str | None] = mapped_column(String)
+
+
+class AgentDevice(Base):
+    __tablename__ = "agent_device"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profile.id"))
+    token_hash: Mapped[str] = mapped_column(String, unique=True)
+    device_name: Mapped[str] = mapped_column(String)
+    agent_version: Mapped[str] = mapped_column(String)
+    codex_version: Mapped[str | None] = mapped_column(String)
+    codex_ready: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_at: Mapped[str] = mapped_column(String)
+    revoked_at: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (Index("uq_active_agent_profile", "profile_id", unique=True,
+        sqlite_where=text("revoked_at IS NULL"), postgresql_where=text("revoked_at IS NULL")),)
+
+
+class AgentRateLimit(Base):
+    __tablename__ = "agent_rate_limit"
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer)
+    reset_at: Mapped[int] = mapped_column(Integer)
+
+
 class Environment(Base):
     __tablename__ = "environment"
     id: Mapped[str] = mapped_column(String, primary_key=True)

@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from backend.db import make_engine, session_factory
 from backend.settings import database_url as configured_database_url
 from backend.auth import local_auth
+from backend.agent import agent_router
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.recommendations import recommendation_router
@@ -67,18 +68,19 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
                       {"name": "recommendations", "description": "작업 관련성 추천과 카드 상태 변경. 점수는 성능 점수가 아닙니다."}],
         responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     if origins:
-        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "PUT", "POST", "PATCH"],
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "PUT", "POST", "PATCH", "DELETE"],
                            allow_headers=["Content-Type", "X-Local-Token"])
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
     app.include_router(comparison_router(sessions, auth))
     app.include_router(recommendation_router(sessions, auth))
+    app.include_router(agent_router(sessions, auth))
 
     @app.exception_handler(HTTPException)
     async def http_error(request, error):
         """API 오류를 프론트가 처리할 공통 형식으로 반환한다."""
         detail = error.detail if isinstance(error.detail, dict) else {"code": "request_failed", "message": str(error.detail)}
-        return JSONResponse(status_code=error.status_code, content={"error": detail})
+        return JSONResponse(status_code=error.status_code, content={"error": detail}, headers=error.headers)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, error):
