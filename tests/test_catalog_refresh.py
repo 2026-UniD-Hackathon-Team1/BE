@@ -159,6 +159,11 @@ def test_rate_limit_defers_ticks_and_manual_retries_without_network(refresh):
     assert result["request_count"] == 0
     assert result["result"]["discovery_errors"][0]["error"] == "collection_cooldown"
     assert len(remote.requests) == 1
+    now[0] += 301
+    remote.status = None
+    retried = run_refresh_tick(sessions, clock=lambda: now[0], client_factory=factory)
+    assert retried["mode"] == "discovery"
+    assert api.get("/api/catalog/jobs/" + retried["job_id"]).json()["status"] == "done"
 
 
 def test_parallel_ticks_do_not_duplicate_discovery(refresh):
@@ -169,7 +174,9 @@ def test_parallel_ticks_do_not_duplicate_discovery(refresh):
         results = list(pool.map(lambda _: run_refresh_tick(sessions, clock=lambda: now[0], client_factory=factory), range(2)))
     assert sum(result.get("mode") == "discovery" for result in results) == 1
     with sessions() as session:
-        assert len(list(session.scalars(select(CatalogSyncJob)))) == 1
+        jobs = list(session.scalars(select(CatalogSyncJob)))
+        assert sum(bool(job.config_json["discovery_queries"]) for job in jobs) == 1
+    assert sum(request.url.path == "/search/repositories" for request in remote.requests) == 1
 
 
 def test_refresh_auth_validation_and_worker_dry_run(database, capsys, monkeypatch):

@@ -102,6 +102,21 @@ def run_refresh_tick(sessions, *, clock=time.time, client_factory=GithubClient):
         return bind_policy(sessions, client_factory(**kwargs), clock=clock)
 
     run_job(sessions, job.id, factory)
+    with sessions.begin() as session:
+        finished = session.get(CatalogSyncJob, job.id)
+        errors = {item.get("error") for key in ("items", "discovery_errors")
+                  for item in finished.result_json.get(key, [])}
+        transient = {"rate_limited", "collection_cooldown", "network_error", "storage_error",
+                     "http_500", "http_502", "http_503", "http_504"}
+        if errors & transient:
+            row = lock_runtime(session)
+            current = dict(row.state_json)
+            if current.get("revision") == state.get("revision"):
+                retry_at = max(clock() + 300, blocked_until(current, clock()) or 0)
+                retry_due = dict(current.get("due", {}))
+                retry_due[mode] = min(retry_due.get(mode, retry_at), retry_at)
+                row.state_json = {**current, "due": retry_due}
+                row.updated_at = utc_now()
     return {"status": "submitted", "mode": mode, "job_id": job.id}
 
 
