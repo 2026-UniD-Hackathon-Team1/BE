@@ -85,6 +85,10 @@ def test_operator_can_approve_exact_safe_skill_for_comparison(candidate):
     assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
         "confirmed": True}).json() == value
     assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["support_level"] == "comparable"
+    applicable = client.post("/api/candidates/ver-real/approve-applicable", headers=HEADERS,
+        json={"expected_bundle_sha256": digest, "confirmed": True})
+    assert applicable.status_code == 200 and applicable.json()["support_level"] == "applicable"
+    assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["support_level"] == "applicable"
     with sessions() as session:
         adapter = session.scalar(select(CandidateAdapter).where(CandidateAdapter.asset_version_id == "ver-real"))
         assert adapter.reviewed and adapter.supported_tasks == ["code_review"]
