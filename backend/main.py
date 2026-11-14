@@ -21,6 +21,7 @@ from backend.profile import profile_router
 from backend.recommendations import recommendation_router
 from backend.work_methods import work_method_router
 from backend.comparisons import comparison_router
+from backend.apply import apply_router
 from backend.schemas import CandidateList, CandidateSummary, ErrorResponse, HealthResponse, SourceList, SourceSummary
 
 def candidate_rows(session):
@@ -76,6 +77,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
     app.include_router(comparison_router(sessions, auth))
+    app.include_router(apply_router(sessions, auth))
     app.include_router(recommendation_router(sessions, auth))
     app.include_router(agent_router(sessions, auth))
     app.include_router(job_router(sessions, auth))
