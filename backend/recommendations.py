@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from backend.catalog.service import stable_id
 from backend.catalog.metadata import public_facts
+from backend.candidates import safe_evidence
 from backend.catalog.inspection import inspect_bundle, public_url, verified_source
 from backend.models import (Asset, AssetVersion, CandidateAdapter, ChangeEvent, Comparison,
                             Environment, Profile, Recommendation, RecommendationDecision,
@@ -37,12 +38,18 @@ def matching_candidates(session, profile):
         method = methods.get(task)
         score = (50 if method else 35) + (20 if goals else 0)
         reasons = ["현재 작업 유형과 관련 있음"]
+        evidence = next((item for item in safe_evidence(tags) if item.category == "task_types" and item.tag == task), None)
+        if evidence:
+            reasons.append(f"원문에 작업이 명시됨: {evidence.path}:{evidence.line}")
         if goals:
             reasons.append("등록한 목표 기능과 관련 있음: " + ", ".join(sorted(goals)))
         if method:
-            reasons.append("등록한 기존 작업 방식과 비교할 후보")
+            reasons.append("등록한 기존 작업 방식과 같은 작업 유형")
         matched.append((score, asset, version, change, task, method, reasons))
-    return sorted(matched, key=lambda row: (-row[0], row[3].first_seen_at, row[1].id))
+    matched.sort(key=lambda row: row[1].id)
+    matched.sort(key=lambda row: row[3].first_seen_at, reverse=True)
+    matched.sort(key=lambda row: row[0], reverse=True)
+    return matched
 
 
 def approved_adapter(session, version, task):
@@ -119,7 +126,7 @@ def recommendation_router(sessions, auth):
                     work_method_version=method.version if method else None,
                     title=asset.display_name, change_type=change.change_type,
                     task_types=sorted(set(version.tags.get("task_types", []))), score=score,
-                    related_reasons=reasons, tag_evidence=version.tags.get("evidence", []), source_url=change.source_url,
+                    related_reasons=reasons, tag_evidence=safe_evidence(version.tags), source_url=change.source_url,
                     compatibility="confirmed" if comparable else "unknown",
                     support_level=adapter.support_level if comparable else "information_only",
                     status=status, reason=decision.reason if decision else None,

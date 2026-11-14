@@ -1,4 +1,5 @@
 from backend.catalog.classification import classify_bundle
+import pytest
 
 
 def test_explicit_tasks_keep_exact_source_evidence():
@@ -23,3 +24,41 @@ def test_unsupported_examples_and_reference_files_are_not_task_claims():
     })
     assert tags["task_types"] == []
     assert tags["evidence"] == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Code review without network access.", ["code_review"]),
+    ("No code review is provided.", []),
+    ("Code review is not supported.", []),
+    ("Supports code review, not test generation.", ["code_review"]),
+    ("Not only code review but input validation.", ["code_review"]),
+    ("Test generation is planned for next year.", []),
+    ("Generate tests automatically.", ["test_generation"]),
+    ("Writing unit tests for existing functions.", ["test_generation"]),
+    ("Review the changes against a fixed revision.", ["code_review"]),
+    ("Test-driven development for new features.", ["test_generation"]),
+    ("Write a failing test before editing production code.", ["test_generation"]),
+    ("테스트 생성 기능은 추가 예정입니다.", []),
+    ("코드 리뷰를 지원하지 않습니다.", []),
+    ("    Generate tests", []),
+    ("> Code review", []),
+    ("Example: Generate tests", []),
+    ("Use the `code review` command as an example.", []),
+    ("<!-- Code review -->", []),
+    ("````text\n```\nGenerate tests\n````", []),
+    ("---\nname: code-review\ndescription: Helps generate tests.\n---", ["test_generation"]),
+    ("---\ndescription: >\n  Use for code review.\n---", ["code_review"]),
+])
+def test_quality_cases_keep_claims_and_exclude_non_claims(text, expected):
+    """부정과 계획 및 코드 예제, frontmatter를 구분하는 고정 품질 사례다."""
+    assert classify_bundle({"SKILL.md": text.encode()})["task_types"] == expected
+
+
+def test_skill_manifest_takes_priority_over_readme_and_catalog_links():
+    """다른 후보 목록을 현재 스킬 자체의 기능으로 분류하지 않는다."""
+    assert classify_bundle({"SKILL.md": b"Validate input.", "README.md": b"Code review and generate tests"})["task_types"] == []
+    assert classify_bundle({"README.md": b"# Collection of agent skills\nCode review\nGenerate tests"})["task_types"] == []
+    assert classify_bundle({"README.md": b"# Tools\n- [Code review](skills/review)\n- [Generate tests](skills/tests)"})["task_types"] == []
+    catalog = b"[A](skills/a)\n[B](skills/b)\n[C](skills/c)\nUse test-driven development for changes."
+    assert classify_bundle({"README.md": catalog})["task_types"] == []
+    assert classify_bundle({"README.md": b"A tool for code review.\n[Docs](docs)\n[Help](help)"})["task_types"] == ["code_review"]

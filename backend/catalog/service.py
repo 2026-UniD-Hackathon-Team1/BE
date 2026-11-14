@@ -151,10 +151,11 @@ class CatalogCollector:
                         change_type="updated" if previous else "new",
                         source_url=version.metadata_json["source_url"]))
                     count += 1
-                if version.metadata_json.get("classification_status") == "pending":
+                if (version.metadata_json.get("classification_status") == "pending"
+                    or version.metadata_json.get("classifier_version") != CLASSIFIER_VERSION):
                     version.tags = classify_bundle(bundle.files)
                     version.metadata_json = {**version.metadata_json,
-                        "classification_status": "rule_classified" if version.tags["task_types"] else "pending",
+                        "classification_status": "rule_classified" if version.tags["task_types"] else "insufficient_evidence",
                         "classifier_version": CLASSIFIER_VERSION}
                 current[asset_id] = version_id
             source.sync_state = {**source.sync_state, "batch": next_state, "current_versions": current}
