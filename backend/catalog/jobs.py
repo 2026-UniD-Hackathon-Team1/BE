@@ -30,7 +30,7 @@ class SyncRequest(CollectionConfig):
     @model_validator(mode="after")
     def require_target(self):
         """대상이 없는 수집 요청은 실행하지 않는다."""
-        if not self.repositories and not self.discovery_queries:
+        if not self.repositories and not self.discovery_queries and not self.resume_pending:
             raise ValueError("collection target required")
         return self
 
@@ -95,8 +95,8 @@ def run_job(sessions, job_id, client_factory=GithubClient):
 
             result = CatalogCollector(sessions, client).run(
                 CollectionConfig.model_validate(config.model_dump(exclude={"max_requests"})), progress=progress)
-            success = any(item["status"] == "done" for item in result["items"])
-            failed = bool(result["discovery_errors"]) or any(item["status"] == "failed" for item in result["items"])
+            success = any(item["status"] in {"done", "partial"} for item in result["items"])
+            failed = bool(result["discovery_errors"]) or any(item["status"] in {"failed", "partial"} for item in result["items"])
             status = ("partial" if success else "failed") if failed else "done"
             with sessions.begin() as session:
                 session.execute(update(CatalogSyncJob).where(CatalogSyncJob.id == job_id,
@@ -135,7 +135,8 @@ def catalog_router(sessions, auth, *, client_factory=GithubClient):
             existing = session.scalar(select(CatalogSyncJob).where(
                 CatalogSyncJob.profile_id == profile_id, CatalogSyncJob.request_key == request_key))
             if existing:
-                if existing.request_hash != digest:
+                if existing.request_hash != digest and SyncRequest.model_validate(
+                        existing.config_json).model_dump(mode="json") != payload:
                     raise HTTPException(409, detail={"code": "idempotency_conflict", "message": "같은 요청 키의 내용이 다릅니다."})
                 return serialize_job(existing)
             if session.scalar(select(CatalogSyncJob.id).where(CatalogSyncJob.active_slot == 1)):

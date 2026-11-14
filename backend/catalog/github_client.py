@@ -42,6 +42,13 @@ class RepositorySnapshot:
     bundles: list[SkillBundle]
 
 
+@dataclass(frozen=True)
+class RepositoryPlan:
+    repository: str
+    state: dict
+    entries: list[dict]
+
+
 def require_sha(value):
     """API 응답의 Git 객체 식별자가 고정 SHA인지 확인한다."""
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
@@ -128,26 +135,38 @@ class GithubClient:
         except (KeyError, TypeError, ValueError, AttributeError):
             raise CollectionError("invalid_search_payload") from None
 
-    def snapshot(self, config: RepositoryConfig) -> RepositorySnapshot:
-        """한 커밋에서 발견한 스킬과 일반 저장소 정보를 읽고 무결성을 확인한다."""
+    def prepare(self, config: RepositoryConfig, continuation=None) -> RepositoryPlan:
+        """고정 커밋의 대상 목록을 준비하고 이어받을 때 최신 커밋과 섞지 않는다."""
         prefix = f"/repos/{config.repository}"
         try:
+            if continuation and continuation["scope"] != sorted(config.skill_folders):
+                raise CollectionError("collection_scope_conflict")
             repo = self.get(prefix)
             if repo.get("private") is not False:
                 raise CollectionError("public_repository_required")
             branch = repo["default_branch"]
             if not isinstance(branch, str) or not branch:
                 raise CollectionError("invalid_default_branch")
-            commits = self.get(f"{prefix}/commits", params={"sha": branch, "per_page": 1})
-            commit = commits[0]
-            sha = require_sha(commit["sha"])
-            tree_sha = require_sha(commit["commit"]["tree"]["sha"])
+            if continuation:
+                sha = require_sha(continuation["commit_sha"])
+                tree_sha = require_sha(continuation["tree_sha"])
+            else:
+                commits = self.get(f"{prefix}/commits", params={"sha": branch, "per_page": 1})
+                commit = commits[0]
+                sha = require_sha(commit["sha"])
+                tree_sha = require_sha(commit["commit"]["tree"]["sha"])
             tree = self.get(f"{prefix}/git/trees/{tree_sha}", params={"recursive": "1"})
             if tree.get("truncated") is not False:
                 raise CollectionError("truncated_tree")
             entries = tree["tree"]
             if not isinstance(entries, list):
                 raise CollectionError("invalid_tree")
+            for entry in entries:
+                validate_repo_path(entry["path"])
+            if len({entry["path"] for entry in entries}) != len(entries):
+                raise CollectionError("duplicate_tree_path")
+            if continuation:
+                return RepositoryPlan(config.repository, dict(continuation), entries)
             releases = self.get(f"{prefix}/releases", params={"per_page": 5})
             if not isinstance(releases, list):
                 raise CollectionError("invalid_releases")
@@ -161,18 +180,53 @@ class GithubClient:
                 item["path"].rsplit("/", 1)[0] if "/" in item["path"] else "."
                 for item in entries if item["path"].split("/")[-1] == "SKILL.md"
             })
-            if len(folders) > 20:
+            if len(folders) > 2000:
                 raise CollectionError("too_many_skills")
-            bundles = [self._bundle(prefix, sha, folder, entries) for folder in folders]
-            readmes = [item for item in entries if item["path"].lower() == "readme.md"]
-            files = {item["path"]: self._read_file(prefix, sha, item) for item in readmes}
-            bundles.append(SkillBundle(".", files, kind="repo"))
-            return RepositorySnapshot(config.repository, sha, metadata, bundles)
+            return RepositoryPlan(config.repository, {"commit_sha": sha, "tree_sha": tree_sha,
+                "metadata": metadata, "folders": folders, "scope": sorted(config.skill_folders), "next": 0}, entries)
         except (KeyError, TypeError, IndexError, AttributeError, ValueError):
             raise CollectionError("invalid_payload") from None
 
+    def unit_entries(self, plan, index):
+        """한 번들에 필요한 파일을 미리 검증해 요청 예산을 계산한다."""
+        folders = plan.state["folders"]
+        if index < len(folders):
+            return self._bundle_entries(folders[index], plan.entries)
+        return [item for item in plan.entries if item["path"].lower() == "readme.md"]
+
+    def read_unit(self, plan, index):
+        """현재 커서의 번들 하나를 고정 원본에서 읽는다."""
+        prefix = f"/repos/{plan.repository}"
+        sha = plan.state["commit_sha"]
+        if index < len(plan.state["folders"]):
+            return self._bundle(prefix, sha, plan.state["folders"][index], plan.entries)
+        files = {item["path"]: self._read_file(prefix, sha, item) for item in self.unit_entries(plan, index)}
+        return SkillBundle(".", files, kind="repo")
+
+    def snapshot(self, config: RepositoryConfig) -> RepositorySnapshot:
+        """작은 저장소의 전체 스냅샷이 필요한 호출에 기존 인터페이스를 제공한다."""
+        plan = self.prepare(config)
+        if len(plan.state["folders"]) > 20:
+            raise CollectionError("too_many_skills")
+        bundles = [self.read_unit(plan, index) for index in range(len(plan.state["folders"]) + 1)]
+        return RepositorySnapshot(config.repository, plan.state["commit_sha"], plan.state["metadata"], bundles)
+
     def _bundle(self, prefix, sha, folder, entries) -> SkillBundle:
         """폴더의 일반 파일만 읽고 경로, 파일 수와 크기 및 Git 해시를 검증한다."""
+        folder_prefix = "" if folder == "." else folder + "/"
+        selected = self._bundle_entries(folder, entries)
+        files = {}
+        for entry in sorted(selected, key=lambda item: item["path"]):
+            path = entry["path"]
+            files[path[len(folder_prefix):]] = self._read_file(prefix, sha, entry)
+        try:
+            files["SKILL.md"].decode("utf-8")
+        except UnicodeError:
+            raise CollectionError("invalid_manifest_encoding") from None
+        return SkillBundle(folder, files)
+
+    def _bundle_entries(self, folder, entries):
+        """네트워크 호출 전에 폴더 경로와 파일 수 및 전체 크기를 확인한다."""
         folder_prefix = "" if folder == "." else folder + "/"
         selected = []
         seen = set()
@@ -196,15 +250,7 @@ class GithubClient:
             selected.append(entry)
         if folder_prefix + "SKILL.md" not in seen:
             raise CollectionError("missing_skill_manifest")
-        files = {}
-        for entry in sorted(selected, key=lambda item: item["path"]):
-            path = entry["path"]
-            files[path[len(folder_prefix):]] = self._read_file(prefix, sha, entry)
-        try:
-            files["SKILL.md"].decode("utf-8")
-        except UnicodeError:
-            raise CollectionError("invalid_manifest_encoding") from None
-        return SkillBundle(folder, files)
+        return selected
 
     def _read_file(self, prefix, sha, entry):
         """고정 커밋의 일반 파일을 크기와 Git blob 해시까지 확인해 반환한다."""

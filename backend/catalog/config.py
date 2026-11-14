@@ -39,6 +39,8 @@ class CollectionConfig(BaseModel):
     repositories: list[RepositoryConfig] = Field(default_factory=list, max_length=20)
     discovery_queries: list[str] = Field(default_factory=list, max_length=5)
     discovery_limit: int = Field(default=5, ge=1, le=20)
+    batch_size: int = Field(default=5, ge=1, le=20)
+    resume_pending: bool = False
 
     @field_validator("discovery_queries")
     @classmethod
