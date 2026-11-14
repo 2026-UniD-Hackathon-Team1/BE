@@ -47,7 +47,8 @@ def serialize_candidate(asset, version, change, source):
 
 
 def create_app(*, database_url: str | None = None, cors_origins: list[str] | None = None,
-               local_token: str | None = None, agent_wait_timeout: float = 30.0):
+               local_token: str | None = None, agent_wait_timeout: float = 30.0,
+               input_wait_timeout: float = 30.0):
     """설정을 주입할 수 있는 API를 만들고 시작 시 DB 변경이나 외부 통신은 하지 않는다."""
     url = configured_database_url(database_url)
     origins = cors_origins if cors_origins is not None else [
@@ -77,7 +78,7 @@ def create_app(*, database_url: str | None = None, cors_origins: list[str] | Non
                            allow_headers=["Content-Type", "X-Local-Token", "Idempotency-Key"])
     app.include_router(profile_router(sessions, auth))
     app.include_router(work_method_router(sessions, auth))
-    app.include_router(comparison_router(sessions, auth))
+    app.include_router(comparison_router(sessions, auth, wait_timeout=input_wait_timeout))
     app.include_router(apply_router(sessions, auth))
     app.include_router(recommendation_router(sessions, auth))
     app.include_router(agent_router(sessions, auth))
