@@ -6,6 +6,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 def utc_now() -> str:
+    """저장용 현재 시각을 UTC ISO 8601 문자열로 반환한다."""
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
@@ -65,6 +66,7 @@ class Source(Base):
     last_success_at: Mapped[str | None] = mapped_column(String)
     last_error: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_state: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class Asset(Base):

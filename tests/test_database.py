@@ -7,6 +7,7 @@ from backend.seed import seed
 
 
 def test_migration_and_idempotent_seed(database):
+    """seed 재실행의 중복 방지와 마이그레이션 왕복 적용을 검증한다."""
     engine, sessions, config = database
     for _ in range(2):
         with sessions.begin() as session:
@@ -25,6 +26,7 @@ def test_migration_and_idempotent_seed(database):
 
 
 def test_foreign_keys_and_duplicate_versions_are_rejected(database):
+    """잘못된 외래키와 자산 내 동일 콘텐츠 버전이 거부되는지 검증한다."""
     _, sessions, _ = database
     with pytest.raises(IntegrityError), sessions.begin() as session:
         session.add(Asset(id="orphan", kind="skill", canonical_key="orphan", display_name="x", source_id="missing"))
@@ -37,6 +39,7 @@ def test_foreign_keys_and_duplicate_versions_are_rejected(database):
 
 
 def test_only_one_active_method_per_task(database):
+    """동일 프로필과 작업 유형에는 활성 방식이 하나만 허용되는지 검증한다."""
     _, sessions, _ = database
     with sessions.begin() as session:
         seed(session)

@@ -7,6 +7,7 @@ from backend.models import Asset, AssetVersion, ChangeEvent, Profile, Source
 
 
 def seed(session):
+    """기존 데이터를 유지하면서 누락된 데모 프로필과 후보 10건을 추가한다."""
     if session.get(Profile, "local") is None:
         session.add(Profile(id="local", role="backend developer", primary_language="python",
                             task_types=["code_review"], goals=["input_validation"]))

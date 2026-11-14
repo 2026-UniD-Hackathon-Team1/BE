@@ -1,0 +1,5 @@
+{
+  "discovery_queries": ["agent skills code review in:name,description,readme"],
+  "discovery_limit": 3,
+  "repositories": []
+}
