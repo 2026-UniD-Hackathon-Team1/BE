@@ -36,6 +36,7 @@ def serialize_candidate(asset, version, change, source):
         title=asset.display_name, revision=version.revision, bundle_sha256=version.bundle_sha256,
         source_url=change.source_url, first_seen_at=change.first_seen_at,
         classification_status=version.metadata_json.get("classification_status", "demo"),
+        tag_evidence=version.tags.get("evidence", []),
         demo=bool(version.metadata_json.get("demo", False)))
 
 

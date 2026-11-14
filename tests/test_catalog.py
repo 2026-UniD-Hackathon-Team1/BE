@@ -3,12 +3,14 @@ import hashlib
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from backend.catalog.config import CollectionConfig, RepositoryConfig
 from backend.catalog.github_client import GithubClient
 from backend.catalog.service import CatalogCollector
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
+from backend.main import create_app
 
 
 class FakeGithub:
@@ -83,7 +85,8 @@ def test_search_discovers_skills_and_repo_without_preset(catalog):
         for version in session.scalars(select(AssetVersion)):
             assert version.revision == "a" * 40
             assert version.metadata_json["support_level"] == "information_only"
-            assert version.tags["task_types"] == []
+            expected = ["code_review"] if "SKILL.md" in version.metadata_json["bundle"]["files"] else []
+            assert version.tags["task_types"] == expected
             assert "bundle" in version.metadata_json
 
 
@@ -162,3 +165,41 @@ def test_invalid_repository_and_path_are_rejected():
                  {"repository": "example/review", "skill_folders": ["../private"]}):
         with pytest.raises(ValueError):
             RepositoryConfig(**data)
+
+
+def test_collected_candidate_reaches_recommendations_with_evidence(catalog):
+    """모의 수집 원문이 분류와 API 추천까지 연결되며 미분류 재처리가 멱등적인지 검증한다."""
+    collector, remote, sessions = catalog
+    config = RepositoryConfig(repository="example/review")
+    collector.collect(config)
+    with sessions.begin() as session:
+        version = session.scalar(select(AssetVersion).join(Asset).where(Asset.kind == "skill"))
+        version_id, digest = version.id, version.bundle_sha256
+        version.tags = {"task_types": []}
+        version.metadata_json = {**version.metadata_json, "classification_status": "pending"}
+        url = str(session.bind.url)
+    assert collector.collect(config)["new_versions"] == 0
+    assert counts(sessions) == (2, 2, 2)
+    with sessions() as session:
+        version = session.get(AssetVersion, version_id)
+        assert version.bundle_sha256 == digest
+        assert version.tags["task_types"] == ["code_review"]
+        assert version.metadata_json["classification_status"] == "rule_classified"
+    headers = {"X-Local-Token": "test-local-token"}
+    with TestClient(create_app(database_url=url, local_token="test-local-token")) as client:
+        client.put("/api/profile", headers=headers, json={"role": "developer", "primary_language": "python",
+                   "task_types": ["code_review"]})
+        result = client.get("/api/recommendations", headers=headers)
+        assert result.status_code == 200
+        items = result.json()["items"]
+        assert len(items) == 1
+        assert items[0]["candidate_version_id"] == version_id
+        assert items[0]["tag_evidence"][0]["excerpt"] == "Review code."
+        assert items[0]["support_level"] == "information_only"
+        assert items[0]["compatibility"] == "unknown"
+        assert items[0]["demo"] is False
+        candidates = client.get("/api/catalog/candidates").json()["items"]
+        assert next(item for item in candidates if item["candidate_version_id"] == version_id)["tag_evidence"]
+        client.put("/api/profile", headers=headers, json={"role": "developer", "primary_language": "python",
+                   "task_types": ["test_generation"]})
+        assert client.get("/api/recommendations", headers=headers).json()["items"] == []

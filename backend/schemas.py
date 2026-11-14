@@ -18,6 +18,14 @@ class HealthResponse(BaseModel):
     database: Literal["ready"] = "ready"
 
 
+class TagEvidence(BaseModel):
+    category: Literal["task_types", "capabilities"]
+    tag: str
+    path: str
+    line: int
+    excerpt: str
+
+
 class CandidateSummary(BaseModel):
     candidate_version_id: str = Field(examples=["demo_ver_01"])
     asset_id: str
@@ -30,6 +38,7 @@ class CandidateSummary(BaseModel):
     support_level: Literal["information_only"] = "information_only"
     performance_status: Literal["not_compared"] = "not_compared"
     classification_status: str
+    tag_evidence: list[TagEvidence] = Field(default_factory=list)
     demo: bool
 
 
@@ -122,6 +131,7 @@ class RecommendationCard(BaseModel):
     task_types: list[str]
     score: int
     related_reasons: list[str]
+    tag_evidence: list[TagEvidence] = Field(default_factory=list)
     source_url: str
     compatibility: Literal["unknown", "confirmed"]
     support_level: Literal["information_only", "comparable", "applicable"]

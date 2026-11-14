@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.catalog.config import CollectionConfig, RepositoryConfig
+from backend.catalog.classification import CLASSIFIER_VERSION, classify_bundle
 from backend.catalog.github_client import CollectionError, GithubClient
 from backend.models import Asset, AssetVersion, ChangeEvent, Source, utc_now
 
@@ -91,6 +92,11 @@ class CatalogCollector:
                         change_type="updated" if previous else "new",
                         source_url=version.metadata_json["source_url"]))
                     count += 1
+                if version.metadata_json.get("classification_status") == "pending":
+                    version.tags = classify_bundle(bundle.files)
+                    version.metadata_json = {**version.metadata_json,
+                        "classification_status": "rule_classified" if version.tags["task_types"] else "pending",
+                        "classifier_version": CLASSIFIER_VERSION}
                 current[asset_id] = version_id
             source.sync_state = {"commit_sha": snapshot.commit_sha, "current_versions": current}
             source.last_success_at = utc_now()

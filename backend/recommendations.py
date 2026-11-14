@@ -98,7 +98,7 @@ def recommendation_router(sessions, auth):
                     work_method_version=method.version if method else None,
                     title=asset.display_name, change_type=change.change_type,
                     task_types=sorted(set(version.tags.get("task_types", []))), score=score,
-                    related_reasons=reasons, source_url=change.source_url,
+                    related_reasons=reasons, tag_evidence=version.tags.get("evidence", []), source_url=change.source_url,
                     compatibility="confirmed" if comparable else "unknown",
                     support_level=adapter.support_level if comparable else "information_only",
                     status=status, reason=decision.reason if decision else None,
