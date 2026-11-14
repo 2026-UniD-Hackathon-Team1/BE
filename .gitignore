@@ -1,8 +1,11 @@
 *.md
 !/README.md
+!/experiments/skill_eval/README.md
+!/experiments/skill_eval/**/SKILL.md
 .venv/
 __pycache__/
 .pytest_cache/
 *.pyc
 .env
 data/
+runtime/
