@@ -82,3 +82,18 @@ class ProfileSaved(BaseModel):
     profile_id: str
     profile_version: int
     recommendations_stale: bool
+
+
+class WorkMethodInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    task_type: TaskType
+    prompt_text: str = Field(min_length=1, max_length=20000, examples=["변경된 함수의 입력 검증과 예외 처리를 확인해 줘."])
+    required_checks: list[str] = Field(default_factory=list, max_length=30)
+    scoring_preferences: dict[str, str] = Field(default_factory=dict, max_length=20)
+
+
+class WorkMethodResponse(WorkMethodInput):
+    method_id: str
+    version: int
+    is_active: bool
+    created_at: str
