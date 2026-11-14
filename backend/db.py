@@ -1,15 +1,21 @@
-"""Local SQLite connections; schema changes are owned by Alembic."""
+"""SQLite와 PostgreSQL의 공통 연결. 스키마 변경은 Alembic으로 관리한다."""
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
+from backend.settings import database_url
 
 
-def make_engine(url: str = "sqlite:///data/galatalkka.db"):
-    """외래키 검사와 잠금 대기 설정을 적용한 SQLite 엔진을 만든다."""
-    if not url.startswith("sqlite:"):
-        raise ValueError("Only local SQLite is supported")
-    engine = create_engine(url, connect_args={"check_same_thread": False})
+def make_engine(url: str):
+    """DB 종류별 연결 설정을 적용하고 PostgreSQL URL을 psycopg 드라이버로 통일한다."""
+    parsed = make_url(url)
+    if parsed.drivername in {"postgres", "postgresql", "postgresql+psycopg"}:
+        return create_engine(parsed.set(drivername="postgresql+psycopg"), pool_pre_ping=True,
+                             connect_args={"connect_timeout": 10})
+    if parsed.get_backend_name() != "sqlite":
+        raise ValueError("Only SQLite and PostgreSQL are supported")
+    engine = create_engine(parsed, connect_args={"check_same_thread": False})
 
     @event.listens_for(engine, "connect")
     def configure_sqlite(connection, _):
@@ -22,10 +28,18 @@ def make_engine(url: str = "sqlite:///data/galatalkka.db"):
     return engine
 
 
+def configured_engine(url: str | None = None):
+    """공통 DATABASE_URL을 읽고 로컬 SQLite인 경우에만 데이터 폴더를 준비한다."""
+    value = database_url(url)
+    parsed = make_url(value)
+    if parsed.get_backend_name() == "sqlite" and parsed.database not in {None, "", ":memory:"}:
+        Path(parsed.database).parent.mkdir(parents=True, exist_ok=True)
+    return make_engine(value)
+
+
 def local_engine():
-    """프로젝트 데이터 폴더를 준비하고 기본 로컬 DB 엔진을 만든다."""
-    Path("data").mkdir(exist_ok=True)
-    return make_engine()
+    """기존 호출과 호환되도록 공통 설정 기반 엔진을 반환한다."""
+    return configured_engine()
 
 
 def session_factory(engine):

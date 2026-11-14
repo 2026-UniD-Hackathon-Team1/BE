@@ -1,7 +1,6 @@
 """프론트가 계약을 확인할 수 있는 API와 OpenAPI 문서 진입점."""
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
@@ -11,14 +10,12 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.db import make_engine, session_factory
+from backend.settings import database_url as configured_database_url
 from backend.auth import local_auth
 from backend.models import Asset, AssetVersion, ChangeEvent, Source
 from backend.profile import profile_router
 from backend.work_methods import work_method_router
 from backend.schemas import CandidateList, CandidateSummary, ErrorResponse, HealthResponse, SourceList, SourceSummary
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 
 def candidate_rows(session):
     """현재 수집 버전과 데모 후보를 정렬해 반환하며 이전 버전은 목록에서 제외한다."""
@@ -43,7 +40,7 @@ def serialize_candidate(asset, version, change, source):
 def create_app(*, database_url: str | None = None, cors_origins: list[str] | None = None,
                local_token: str | None = None):
     """설정을 주입할 수 있는 API를 만들고 시작 시 DB 변경이나 외부 통신은 하지 않는다."""
-    url = database_url or os.environ.get("DATABASE_URL") or f"sqlite:///{(PROJECT_ROOT / 'data' / 'galatalkka.db').as_posix()}"
+    url = configured_database_url(database_url)
     origins = cors_origins if cors_origins is not None else [
         item.strip() for item in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",") if item.strip()]
     engine = make_engine(url)

@@ -1,0 +1,15 @@
+.git
+.venv
+.env
+.env.*
+*.md
+data
+tests
+experiments
+.agents
+.codex
+.aws
+__pycache__
+**/__pycache__
+.pytest_cache
+*.db

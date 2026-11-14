@@ -53,7 +53,8 @@ class WorkMethod(Base):
     created_at: Mapped[str] = mapped_column(String, default=utc_now)
     __table_args__ = (
         CheckConstraint("version > 0"),
-        Index("uq_active_method_task", "profile_id", "task_type", unique=True, sqlite_where=text("is_active = 1")),
+        Index("uq_active_method_task", "profile_id", "task_type", unique=True,
+              sqlite_where=text("is_active = 1"), postgresql_where=text("is_active IS TRUE")),
     )
 
 

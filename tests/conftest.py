@@ -10,6 +10,7 @@ def database(tmp_path):
     url = f"sqlite:///{(tmp_path / 'test.db').as_posix()}"
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
+    config.attributes["database_url"] = url
     command.upgrade(config, "head")
     engine = make_engine(url)
     yield engine, session_factory(engine), config
