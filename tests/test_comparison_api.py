@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from backend.main import create_app
 from backend.seed import seed
 from backend.models import Comparison, EventLog, WorkMethod
+from backend.models import Environment
 from sqlalchemy import select
 
 
@@ -51,3 +52,24 @@ def test_completed_comparison_records_user_decision_and_history(database):
         assert response.status_code == 200
         assert client.get("/api/comparisons/cmp_1", headers=headers).json()["verdict"] == "candidate"
         assert client.get("/api/history", headers=headers).json()[0]["payload"]["reason"] == "결과가 더 명확함"
+
+
+def test_register_input_rejects_path_escape(database, tmp_path):
+    engine, sessions, _ = database
+    root = tmp_path / "approved"
+    root.mkdir()
+    (root / "app.py").write_text("pass\n")
+    with sessions.begin() as session:
+        seed(session)
+        session.add(Environment(id="env_1", profile_id="local", runner="codex_cli",
+            runner_version="test", model_id="fixed", installed_skills=[],
+            settings_hash="x", scan_root=str(root)))
+    headers = {"X-Local-Token": "test-token"}
+    with TestClient(create_app(database_url=str(engine.url), local_token="test-token")) as client:
+        invalid = client.post("/api/inputs", headers=headers,
+            json={"relative_paths": ["../outside.py"], "task_type": "code_review"})
+        assert invalid.status_code == 422
+        valid = client.post("/api/inputs", headers=headers,
+            json={"relative_paths": ["app.py"], "task_type": "code_review"})
+        assert valid.status_code == 201
+        assert valid.json()["input_id"].startswith("input_")

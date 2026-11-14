@@ -140,6 +140,7 @@ def execute_comparison(
     method_prompt: str,
     timeout: int = 180,
     max_output_bytes: int = 2 * 1024 * 1024,
+    expected_input_sha256: str | None = None,
 ) -> ComparisonResult:
     candidate_bundle = candidate_bundle.resolve(strict=True)
     if not method_prompt.strip():
@@ -157,6 +158,8 @@ def execute_comparison(
     output_root.mkdir(parents=True, exist_ok=False)
     snapshot = create_input_snapshot(root, selected_paths)
     try:
+        if expected_input_sha256 is not None and snapshot.sha256 != expected_input_sha256:
+            raise ValueError("comparison input changed")
         baseline = _run_arm(
             "baseline", snapshot, None, output_root, codex_command, timeout, max_output_bytes, model_id, method_prompt
         )

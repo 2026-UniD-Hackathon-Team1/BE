@@ -1,7 +1,7 @@
 """Local comparison requests and result viewing."""
 import os
-import hashlib
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from backend.models import Asset, AssetVersion, CandidateAdapter, Comparison, Environment, EventLog, Run, WorkMethod, utc_now
 from backend.runtime.comparison import execute_comparison
+from backend.input_store import register_input, load_input
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "experiments" / "skill_eval" / "fixture"
@@ -19,7 +20,7 @@ class ComparisonInput(BaseModel):
     method_id: str
     method_version: int = Field(ge=1)
     candidate_version_id: str
-    task_type: str
+    task_type: Literal["code_review", "test_generation"]
     input_ids: list[str] = Field(min_length=1, max_length=3)
     confirmed_upload_scope: bool
     idempotency_key: str = Field(min_length=1)
@@ -30,17 +31,36 @@ class DecisionInput(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class InputRegistration(BaseModel):
+    relative_paths: list[str] = Field(min_length=1, max_length=3)
+    task_type: Literal["code_review", "test_generation"]
+
+
 def comparison_router(sessions, auth):
     router = APIRouter(tags=["comparisons"])
+
+    @router.post("/api/inputs", status_code=201)
+    def register(body: InputRegistration, profile_id: str = Depends(auth)):
+        with sessions() as session:
+            environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
+            if environment is None:
+                raise HTTPException(409, detail={"code": "environment_not_ready", "message": "먼저 작업 경로를 승인해 주세요."})
+            root = Path(environment.scan_root)
+        try:
+            manifest = register_input(root, body.relative_paths, ROOT / "runtime" / "inputs", body.task_type)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, detail={"code": "invalid_input_path", "message": "승인된 경로의 일반 파일만 선택해 주세요."}) from error
+        return manifest
 
     @router.get("/api/inputs/suggestions")
     def suggestions(task_type: str = Query(..., pattern="^(code_review|test_generation)$"), profile_id: str = Depends(auth)):
         if task_type != "code_review" or not (FIXTURE / "app.py").is_file():
             return []
-        return [{"suggestion_id": "fixture-review-01", "kind": "fixture", "label": "코드 리뷰 예제",
+        manifest = register_input(FIXTURE, ["app.py"], ROOT / "runtime" / "inputs", task_type)
+        return [{"suggestion_id": manifest["input_id"], "kind": "fixture", "label": "코드 리뷰 예제",
                  "meta": "파일 1개", "relative_paths": ["app.py"], "excluded_paths": []}]
 
-    def run_job(comparison_id: str, method_prompt: str, bundle: str, digest: str,
+    def run_job(comparison_id: str, input_id: str, method_prompt: str, bundle: str, digest: str,
                 model: str, runner_version: str):
         with sessions.begin() as session:
             comparison = session.get(Comparison, comparison_id)
@@ -49,14 +69,16 @@ def comparison_router(sessions, auth):
             expected_input_sha256 = comparison.input_sha256
             comparison.status = "running"
         try:
-            actual_input_sha256 = hashlib.sha256(b"app.py\0" + (FIXTURE / "app.py").read_bytes()).hexdigest()
-            if actual_input_sha256 != expected_input_sha256:
+            manifest = load_input(input_id, ROOT / "runtime" / "inputs")
+            if manifest["input_sha256"] != expected_input_sha256:
                 raise ValueError("comparison input changed")
-            result = execute_comparison(root=FIXTURE, selected_paths=[Path("app.py")],
+            result = execute_comparison(root=ROOT / "runtime" / "inputs" / input_id / "files",
+                selected_paths=[Path(path) for path in manifest["relative_paths"]],
                 candidate_bundle=Path(bundle), approved_bundle_sha256=digest,
                 model_id=model, runner_version=runner_version, method_prompt=method_prompt,
                 output_root=ROOT / "runtime" / "comparisons" / comparison_id,
-                codex_command=[os.environ.get("CODEX_BIN", "codex")])
+                codex_command=[os.environ.get("CODEX_BIN", "codex")],
+                expected_input_sha256=expected_input_sha256)
             with sessions.begin() as session:
                 comparison = session.get(Comparison, comparison_id)
                 for name, arm in (("baseline", result.baseline), ("candidate", result.candidate)):
@@ -89,19 +111,25 @@ def comparison_router(sessions, auth):
                 raise HTTPException(409, detail={"code": "candidate_not_comparable", "message": "이 후보는 비교할 수 없습니다."})
             if version.bundle_sha256 != adapter.approved_bundle_sha256:
                 raise HTTPException(409, detail={"code": "candidate_version_changed", "message": "승인된 후보 버전과 현재 버전이 다릅니다."})
-            if body.input_ids != ["fixture-review-01"] or body.task_type != method.task_type or not body.confirmed_upload_scope:
+            if len(body.input_ids) != 1 or body.task_type != method.task_type or not body.confirmed_upload_scope:
                 raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "비교 입력을 확인해 주세요."})
+            try:
+                manifest = load_input(body.input_ids[0], ROOT / "runtime" / "inputs")
+            except (ValueError, OSError):
+                raise HTTPException(422, detail={"code": "invalid_input_id", "message": "등록된 비교 입력을 다시 선택해 주세요."}) from None
+            if manifest.get("task_type") != body.task_type:
+                raise HTTPException(422, detail={"code": "invalid_comparison_input", "message": "입력의 작업 유형이 비교 유형과 다릅니다."})
             environment = session.scalar(select(Environment).where(Environment.profile_id == profile_id).order_by(Environment.scanned_at.desc()))
             if environment is None or not version.artifact_path:
                 raise HTTPException(409, detail={"code": "environment_not_ready", "message": "실행 환경과 후보 파일을 확인해 주세요."})
             comparison_id = "cmp_" + uuid4().hex
             session.add(Comparison(id=comparison_id, profile_id=profile_id, method_id=method.id,
                 method_version=method.version, candidate_version_id=version.id,
-                input_manifest=[{"input_id": "fixture-review-01", "relative_paths": ["app.py"]}],
-                input_sha256=hashlib.sha256(b"app.py\0" + (FIXTURE / "app.py").read_bytes()).hexdigest(), plan={"idempotency_key": body.idempotency_key,
+                input_manifest=[manifest],
+                input_sha256=manifest["input_sha256"], plan={"idempotency_key": body.idempotency_key,
                 "model_id": environment.model_id, "runner_version": environment.runner_version,
                 "timeout_seconds": 180}, status="queued"))
-            job = (comparison_id, method.prompt_text, version.artifact_path,
+            job = (comparison_id, manifest["input_id"], method.prompt_text, version.artifact_path,
                    adapter.approved_bundle_sha256, environment.model_id, environment.runner_version)
         background.add_task(run_job, *job)
         return {"comparison_id": comparison_id, "status": "queued"}

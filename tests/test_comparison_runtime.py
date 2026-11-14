@@ -92,6 +92,21 @@ def test_execute_comparison_keeps_arms_separate_and_rejects_changed_candidate(tm
     assert result.baseline.input_sha256 == result.candidate.input_sha256
     assert result.baseline.output_path != result.candidate.output_path
 
+    with pytest.raises(ValueError, match="comparison input changed"):
+        execute_comparison(
+            root=root,
+            selected_paths=[Path("app.py")],
+            candidate_bundle=bundle,
+            approved_bundle_sha256=digest,
+            model_id="fixed-model",
+            runner_version="codex 0.test",
+            output_root=tmp_path / "changed-input",
+            codex_command=[str(executable)],
+            timeout=3,
+            method_prompt="Check input validation",
+            expected_input_sha256="0" * 64,
+        )
+
     with pytest.raises(ValueError, match="approved candidate hash"):
         execute_comparison(
             root=root,
