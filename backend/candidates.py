@@ -45,7 +45,7 @@ def reviewed_adapter(adapters, digest):
 
 
 def executable_adapter(asset, version, metadata, adapter, verified, inspection):
-    """??? ???? ?? ?? ? ??? ??? ??? ??? ?? ???? ????."""
+    """목록과 상세에서 출처와 무결성이 확인된 승인만 실행 수준으로 표시한다."""
     repository = metadata.get("repository", {})
     repository = repository if isinstance(repository, dict) else {}
     return adapter if (adapter and verified and inspection["integrity_status"] == "verified"
@@ -177,7 +177,7 @@ def candidate_router(sessions, auth, operator):
             return candidate_detail(session, version, profile_id)
 
     def approve_candidate(version_id, body, support_level):
-        """??? ?? ??? ???? ??? ??? ???? ?? ??? ????."""
+        """검토한 고정 원문만 승인하고 테스트 자료는 차단한다."""
         if not body.confirmed:
             raise HTTPException(422, detail={"code": "approval_not_confirmed", "message": "후보 파일 검토를 확인해 주세요."})
         with sessions.begin() as session:
@@ -231,12 +231,12 @@ def candidate_router(sessions, auth, operator):
     @router.post("/{version_id}/approve-comparison", status_code=201,
                  summary="검토한 고정 스킬 버전을 Codex 코드 리뷰 비교에 승인")
     def approve_comparison(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
-        """???? ??? ??? ?? ?? ??? ????."""
+        """운영자가 확인한 해시를 코드 리뷰 비교에 승인한다."""
         return approve_candidate(version_id, body, "comparable")
 
     @router.post("/{version_id}/approve-applicable", summary="검토한 고정 스킬 버전을 PC 적용에 승인")
     def approve_applicable(version_id: str, body: ComparisonApproval, _operator: str = Depends(operator)):
-        """???? ??? ??? PC ??? ????."""
+        """운영자가 확인한 해시를 PC 적용에 승인한다."""
         return approve_candidate(version_id, body, "applicable")
 
     return router

@@ -192,7 +192,7 @@ def recommendation_router(sessions, auth):
                     continue
                 adapter = approved_adapter(session, version, task)
                 environment = current_environment(session, profile_id)
-                # ?? ??? ??? ???? ?? ??? ??? ??? ?? ??? ?? ? ????.
+                # 연결 기기의 준비를 확인하고 로컬 환경은 후보 파일이 있을 때 비교한다.
                 comparable = bool(adapter and method and environment and adapter.runner == environment.runner
                                   and task == "code_review" and task in version.tags.get("task_types", [])
                                   and task in adapter.supported_tasks and (

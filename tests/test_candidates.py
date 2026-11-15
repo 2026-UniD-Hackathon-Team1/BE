@@ -91,7 +91,7 @@ def test_operator_can_approve_exact_safe_skill_for_comparison(candidate):
         json={"expected_bundle_sha256": digest, "confirmed": True})
     assert applicable.status_code == 200 and applicable.json()["support_level"] == "applicable"
     assert client.get("/api/candidates/ver-real", headers=HEADERS).json()["support_level"] == "applicable"
-    # ?? ??? ????? ?? ??? ?? ??? ??? ???.
+    # 비교 승인을 다시 요청해도 기존 적용 승인을 낮추지 않는다.
     assert client.post(url, headers=HEADERS, json={"expected_bundle_sha256": digest,
         "confirmed": True}).json()["support_level"] == "applicable"
     with sessions() as session:
@@ -301,7 +301,7 @@ def test_unsafe_source_url_is_not_returned_or_marked_verified(candidate):
 
 @pytest.mark.parametrize("endpoint", ["approve-comparison", "approve-applicable"])
 def test_operator_cannot_approve_repository_fixture(candidate, endpoint):
-    """??? ???? ??? ?? ??? ??? ??? ?? ???? ????."""
+    """본문이 안전해도 저장소 내부 테스트 자료는 승인에서 제외한다."""
     client, sessions = candidate
     bundle = {"files": {"SKILL.md": base64.b64encode(
         b"---\nname: review\n---\nReview code with input validation.\n").decode()}}
