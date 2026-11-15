@@ -4,7 +4,8 @@ import json
 import re
 from datetime import datetime, timezone
 
-from backend.catalog.dimensions import RULES, declares_target, extract_dimensions
+from backend.catalog.dimensions import (RULES, accessibility_review_actions, database_review_actions,
+                                       declared_review_actions, declares_target, extract_dimensions)
 from backend.catalog.inspection import verified_source
 from backend.catalog.metadata import timestamp
 
@@ -171,8 +172,10 @@ def _evidence(tags, dimensions):
     result = []
     items = _dict(tags.get("dimensions")).get("evidence", [])
     targets = _dict(tags.get("dimensions")).get("target_evidence", [])
+    actions = _dict(tags.get("dimensions")).get("action_evidence", [])
     legacy = tags.get("evidence", [])
     combined = ((targets[:120] if isinstance(targets, list) else [])
+        + (actions[:120] if isinstance(actions, list) else [])
         + (items[:120] if isinstance(items, list) else []) + (legacy[:120] if isinstance(legacy, list) else []))
     for item in combined:
         if not isinstance(item, dict):
@@ -275,6 +278,40 @@ def _browser_workflow_complement(context, dimensions, evidence):
     return None
 
 
+def _accessibility_workflow_complement(context, tags, dimensions, evidence):
+    """접근성 검토 공백에 원문으로 확인한 감사나 검증 행동만 보완 후보로 연결한다."""
+    declared_actions = _dict(tags.get("dimensions")).get("review_actions", [])
+    source_evidence = [item for item in evidence if item["dimension"] == "capabilities"
+        and item["value"] == "accessibility" and set(accessibility_review_actions(item["excerpt"])) & set(declared_actions)]
+    if "code_review" not in context["task_types"] or "accessibility" not in dimensions["capabilities"] or not source_evidence:
+        return None
+    for method in context["methods"]:
+        if method["task_type"] != "code_review":
+            continue
+        steps = [step for step in method["workflow"] if step["source"] == "declared_workflow"
+            and step["status"] == "gap" and "accessibility" in step["capabilities"]]
+        if steps:
+            return method, steps, source_evidence
+    return None
+
+
+def _database_workflow_complement(context, tags, dimensions, evidence):
+    """DB 검토를 명시한 후보만 사용자가 선언한 DB 변경 검토 공백에 연결한다."""
+    actions = _dict(tags.get("dimensions")).get("review_actions", [])
+    source_evidence = [item for item in evidence if item["dimension"] == "capabilities"
+        and item["value"] == "database_changes" and set(database_review_actions(item["excerpt"])) & set(actions)]
+    if "code_review" not in context["task_types"] or "database_changes" not in dimensions["capabilities"] or not source_evidence:
+        return None
+    for method in context["methods"]:
+        if method["task_type"] != "code_review":
+            continue
+        steps = [step for step in method["workflow"] if step["source"] == "declared_workflow"
+            and step["status"] == "gap" and "database_changes" in step["capabilities"]]
+        if steps:
+            return method, steps, source_evidence
+    return None
+
+
 def rank_candidate(profile, methods, environment, asset, version, change, source, now=None):
     """실행 승인이나 성능 추정 없이 후보의 작업 관련성과 확인할 조건을 반환한다."""
     context = build_context(profile, methods, environment)
@@ -286,8 +323,15 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     candidate_tasks = _names(tags.get("task_types", []))
     tasks = sorted(set(candidate_tasks) & set(context["task_types"]))
     complement = _browser_workflow_complement(context, dimensions, evidence) if not tasks else None
-    route_tasks = tasks or (["test_generation"] if complement else [])
-    relevance_caps = ["browser_testing"] if complement else dimensions["capabilities"]
+    complement_cap = "browser_testing" if complement else None
+    accessibility_complement = _accessibility_workflow_complement(context, tags, dimensions, evidence) if not tasks and not complement else None
+    if accessibility_complement:
+        complement, complement_cap = accessibility_complement[:2], "accessibility"
+    database_complement = _database_workflow_complement(context, tags, dimensions, evidence) if not tasks and not complement else None
+    if database_complement:
+        complement, complement_cap = database_complement[:2], "database_changes"
+    route_tasks = tasks or ([complement[0]["task_type"]] if complement else [])
+    relevance_caps = [complement_cap] if complement else dimensions["capabilities"]
     matches = {key: sorted(set(targets[key]) & set(effective.get(key, [])))
         for key in ("languages", "tools")}
     matches["frameworks"] = _framework_matches(targets["frameworks"], effective["frameworks"])
@@ -302,7 +346,16 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     if not route_tasks:
         excluded.append("등록한 작업 유형과 일치하지 않음")
     if complement:
-        uncertainties.append("테스트 코드 작성 전체 지원은 확인하지 못함")
+        if complement_cap == "browser_testing":
+            uncertainties.append("테스트 코드 작성 전체 지원은 확인하지 못함")
+        else:
+            label = "접근성 감사 및 검증" if complement_cap == "accessibility" else "DB 모델 및 변경 검토"
+            uncertainties.append(label + " 단계의 보완이며 코드 리뷰 전체 지원은 확인하지 못함")
+            source_action_evidence = (accessibility_complement or database_complement)[2]
+            matches["source_action_evidence"] = source_action_evidence
+            matches["source_actions"] = sorted({action for item in source_action_evidence
+                for action in declared_review_actions(item["excerpt"])})
+        matches["complementary_capability"] = complement_cap
     if _get(source, "enabled", True) is False:
         excluded.append("수집 소스가 비활성 상태임")
     if _dict(_dict(_get(version, "metadata_json")).get("repository")).get("archived") is True:
@@ -390,7 +443,9 @@ def rank_candidate(profile, methods, environment, asset, version, change, source
     elif has_context_fit:
         matches["confidence"] = "contextual"
     if complement:
-        reasons.append("등록한 브라우저 검증 단계를 보완할 후보로 연결함")
+        label = {"browser_testing": "브라우저 검증", "accessibility": "접근성 감사 및 검증",
+                 "database_changes": "DB 모델 및 변경 검토"}[complement_cap]
+        reasons.append("등록한 " + label + " 단계를 보완할 후보로 연결함")
     elif tasks:
         reasons.append("현재 " + ("코드 리뷰" if matches["task_type"] == "code_review" else "테스트 작성") + " 작업과 관련 있음")
     if matches["goals"]:

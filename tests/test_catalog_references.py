@@ -168,3 +168,35 @@ def test_explicit_unused_links_and_nested_reference_lists_are_not_active_rules()
     })
     assert tags["capabilities"] == ["input_validation"]
     assert [item["path"] for item in tags["dimensions"]["reference_links"]] == ["references/active.md"]
+
+
+def test_copying_external_documentation_exclusion_does_not_disable_documentation_writing():
+    """외부 자료 무단 복사 제외를 문서 작성 기능 자체의 미지원으로 해석하지 않는다."""
+    tags, _ = classify("---\nname: docs\ndescription: >-\n  Writes or updates engineering documentation.\n"
+        "  Not for copying external documentation without provenance.\n---\n# Documentation and ADRs", {})
+    assert tags["capabilities"] == ["documentation"] and tags["task_types"] == []
+
+
+def test_review_markdown_checklist_questions_and_checkbox_rules_are_functional_evidence():
+    """리뷰 절차가 명시한 Markdown 체크리스트의 검사 질문만 실제 기능 근거로 읽는다."""
+    tags, files = classify("# Code Review\n### Phase 3: Line-by-Line Review\n```markdown\n"
+        "2. **Security**\n   - Input validation?\n```\nRead `references/security.md`.", {
+        "references/security.md": "# Review patterns\n### Technique: The Checklist Method\n```markdown\n"
+            "### Authentication & Authorization\n- [ ] Authentication/authorization checked\n```"})
+    assert set(tags["capabilities"]) == {"input_validation", "api_security"}
+    assert tags["task_types"] == ["code_review"]
+    for item in tags["dimensions"]["evidence"]:
+        if item["dimension"] == "capabilities":
+            assert item["excerpt"] in files[item["path"]].decode().splitlines()[item["line"] - 1]
+
+
+@pytest.mark.parametrize("header,language,body", [
+    ("Examples", "markdown", "- [ ] API security checked"),
+    ("Code Review", "python", "- [ ] API security checked"),
+    ("Code Review", "markdown", "### API security\nTODO"),
+    ("Code Review", "markdown", "Generate tests with API security."),
+])
+def test_ordinary_code_fences_and_incomplete_templates_do_not_provide_functions(header, language, body):
+    """일반 코드 예제나 미완성 템플릿을 리뷰 체크리스트의 수행 기능으로 승격하지 않는다."""
+    tags, _ = classify("# " + header + "\n```" + language + "\n" + body + "\n```", {})
+    assert "api_security" not in tags["capabilities"]

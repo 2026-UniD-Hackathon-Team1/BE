@@ -384,3 +384,60 @@ def test_reading_references_is_not_documentation_production(text):
 def test_documentation_creation_survives_distinct_reference_instruction(text):
     """실제 문서 생성 동작이 있으면 다른 참조 지시 때문에 근거를 잃지 않는다."""
     assert "documentation" in _extract(text)["capabilities"]
+
+
+def test_documentation_location_is_not_documentation_creation():
+    """패턴 문서의 저장 위치를 소개하는 문장을 문서 작성 기능으로 분류하지 않는다."""
+    assert "documentation" not in _extract("Detailed pattern documentation lives in `references/details.md`.")["capabilities"]
+
+
+@pytest.mark.parametrize("text,action", [
+    ("Conduct WCAG 2.2 accessibility audits with manual verification.", "accessibility_audit"),
+    ("Use when auditing websites for accessibility.", "accessibility_audit"),
+    ("Review UI code for accessibility.", "ui_accessibility_review"),
+    ("Test web applications with screen readers. Verify accessibility.", "screen_reader_testing"),
+])
+def test_explicit_accessibility_review_actions_keep_separate_original_evidence(text, action):
+    """접근성 구현 일반 지침과 다른 명시적 감사 및 검증 행동의 원문을 보존한다."""
+    result = _extract(text)
+    assert action in result["review_actions"] and "accessibility" in result["capabilities"]
+    evidence = next(item for item in result["action_evidence"] if item["action"] == action)
+    assert evidence["line"] == 1 and evidence["excerpt"] in text
+
+
+@pytest.mark.parametrize("text", ["Implement accessible components with WCAG.",
+    "No accessibility audits are provided.", "We plan to conduct accessibility audits.",
+    "Supports accessibility and ARIA implementations."])
+def test_generic_accessibility_implementation_or_future_audit_is_not_review_action(text):
+    """일반 구현과 부정 및 계획 문구에는 감사 실행 행동을 추가하지 않는다."""
+    assert _extract(text)["review_actions"] == []
+
+
+@pytest.mark.parametrize("text", ["`category`: bug / performance / documentation",
+    "Output includes structured category (bug / performance / documentation / other).",
+    "Allowed values: performance, documentation", "Valid categories: performance, documentation"])
+def test_output_labels_and_schema_enumerations_are_not_provided_capabilities(text):
+    """출력 필드나 enum에 든 기능 이름을 실제 지원 동작으로 분류하지 않는다."""
+    assert _extract(text)["capabilities"] == []
+
+
+def test_explicit_documentation_review_survives_separate_output_enum():
+    """실제 문서 검토 선언은 유지하고 분류 라벨에서 얻은 잘못된 근거만 제외한다."""
+    result = _extract("Reviews documentation and comments.\nOutput includes category (bug / documentation).")
+    assert result["capabilities"] == ["documentation"]
+    assert result["evidence"][0]["line"] == 1
+
+
+def test_database_model_review_action_is_explicit_and_api_schema_is_not_database_change():
+    """DB 검토 행동은 보존하되 일반 API 스키마나 실행 전용 마이그레이션과 구분한다."""
+    result = _extract("Designs or reviews relational, document, key-value, graph, or search data\n"
+        "models. Use for schema changes and database migrations.")
+    assert result["review_actions"] == ["database_model_review"]
+    assert result["action_evidence"][0]["line"] == 1
+    assert "database_changes" not in _extract("Reviews API schema changes.")["capabilities"]
+    assert _extract("Implements SQL migrations safely.")["review_actions"] == []
+
+
+def test_authorization_authentication_pair_is_explicit_api_security_review_scope():
+    """실제 리뷰 항목의 역순 인증 인가 표기도 두 기능을 확인한 동일 영역으로 인식한다."""
+    assert "api_security" in _extract("- **Security:** authorization/authentication gaps.")["capabilities"]

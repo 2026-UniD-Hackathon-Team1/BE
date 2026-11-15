@@ -3,7 +3,7 @@ import re
 from collections import deque
 from pathlib import PurePosixPath
 
-from backend.catalog.dimensions import (COMPILED_RULES, FUTURE, NEGATIVE, SECRET_ASSIGNMENT,
+from backend.catalog.dimensions import (COMPILED_RULES, FUTURE, NEGATIVE, REVIEW_ACTION_CAPABILITIES, SECRET_ASSIGNMENT,
     UNSUPPORTED_SECTION, _document_lines, _is_catalog, _primary_document, _prose, extract_dimensions)
 
 
@@ -12,6 +12,51 @@ MAX_FILE_BYTES = 64 * 1024
 MAX_DEPTH = 2
 NON_FUNCTIONAL_SECTION = re.compile(r"^(?:\d+[.)]?\s*)?(?:inputs?|references?|resources?|examples?)\b|^(?:입력|참고|참조|예시)", re.I)
 COMMAND = re.compile(r"^(?:\$|PS>|&|(?:python\d*|node|bash|sh|pwsh|powershell|cmd|pip|npm|npx|curl|wget)\s)", re.I)
+
+
+def _review_checklist_lines(text):
+    """명시된 리뷰 절차의 Markdown 울타리 안에서 실제 검사 질문과 체크박스만 구분한다."""
+    selected, headings, block = {}, [], []
+    fence, eligible, last_intent = None, False, ""
+    for number, line in _document_lines(text):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            current, suffix = marker.group(1), marker.group(2).strip().lower()
+            if fence is None:
+                context = " ".join(title for _, title in headings) + " " + last_intent
+                eligible = (suffix in {"md", "markdown"} and re.search(r"\breview\b|\bchecklist\b|검토|체크리스트", context, re.I)
+                    and not any(NON_FUNCTIONAL_SECTION.search(title) or FUTURE.search(title)
+                        or UNSUPPORTED_SECTION.search(title) for _, title in headings)
+                    and not NEGATIVE.search(last_intent))
+                fence, block = current, []
+            elif current[0] == fence[0] and len(current) >= len(fence) and not suffix:
+                if eligible:
+                    inner = []
+                    for location, item in block:
+                        heading = re.match(r"^\s*(#{1,6})\s+(.+)$", item)
+                        if heading:
+                            depth = len(heading.group(1))
+                            inner = [(level, pos, raw) for level, pos, raw in inner if level < depth]
+                            inner.append((depth, location, item))
+                        check = re.match(r"^\s*[-*+]\s+(?:(\[[ xX]\])\s+)?(.+)$", item)
+                        if (check and (check.group(1) or check.group(2).rstrip().endswith("?"))
+                                and not re.search(r"\b(?:TODO|TBD)\b|<[^>]*>", check.group(2))):
+                            selected[location] = check.group(2)
+                            selected.update({pos: raw for _, pos, raw in inner})
+                fence, block, eligible = None, [], False
+            continue
+        if fence:
+            if eligible and len(block) < 200:
+                block.append((number, line))
+            continue
+        heading = re.match(r"^ {0,3}(#{1,6})\s+(.*)$", line)
+        if heading:
+            depth, title = len(heading.group(1)), heading.group(2)
+            headings = [(level, prior) for level, prior in headings if level < depth] + [(depth, title)]
+            last_intent = ""
+        elif re.fullmatch(r"\s*\*\*[^*]+\*\*:?\s*", line):
+            last_intent = line
+    return selected
 
 
 def _markdown_lines(text):
@@ -120,8 +165,19 @@ def _unsupported_capabilities(text):
             continue
         for clause in re.split(r"(?<=[.!?])\s+|;\s*|\s+(?:but|whereas|however)\s+|하지만|반면", prose, flags=re.I):
             clause = re.sub(r"\bnot\s+only\b", "", clause, flags=re.I)
-            if blocked is not None or NEGATIVE.search(clause) or FUTURE.search(clause):
-                result.update(value for value, pattern in COMPILED_RULES["capabilities"].items() if pattern.search(clause))
+            for value, pattern in COMPILED_RULES["capabilities"].items():
+                for match in pattern.finditer(clause):
+                    before, after = clause[:match.start()], clause[match.end():]
+                    direct_no = re.search(r"\b(?:no|without)\s+(?:(?:support|checks?)\s+for\s+)?$", before, re.I)
+                    no_action = re.search(r"\b(?:do(?:es)?\s+not|don't|doesn't|cannot|can't|never)\s+"
+                        r"(?:support|provide|perform|include|implement|offer|cover|generate|write|review|check)\s+(?:any\s+)?$", before, re.I)
+                    unsupported = re.match(r"\s*(?:is\s+|are\s+)?(?:unsupported|unavailable|excluded|not\s+(?:supported|provided|included|implemented|available))\b", after, re.I)
+                    unsupported = unsupported or re.match(r"(?:은|는|을|를)?\s*(?:지원하지|미지원|불가)", after)
+                    planned = (re.search(r"\bplan\s+to\s+(?:add|support|include|implement|provide)\b", before, re.I)
+                        or re.search(r"\b(?:will|would)\s+(?:be\s+)?(?:added|supported|implemented|provided|add|support|implement|provide)\b", after, re.I))
+                    scope = blocked is not None and not re.search(r"\b(?:copying|external|examples?|references?|claims?)\b", clause, re.I)
+                    if direct_no or no_action or unsupported or planned or scope:
+                        result.add(value)
     return result
 
 
@@ -157,6 +213,9 @@ def _reference_document(text):
             table_columns = None
             lines[number - 1] = line
             spans[number] = [(0, len(line))]
+    for number, line in _review_checklist_lines(text).items():
+        lines[number - 1] = line
+        spans[number] = [(0, len(originals[number - 1]))]
     return "\n".join(lines), spans
 
 
@@ -192,6 +251,20 @@ def enrich_referenced_capabilities(files, dimensions):
     if _is_catalog(text):
         return result
     unsupported = _unsupported_capabilities(text)
+    checklist = _review_checklist_lines(text)
+    if checklist:
+        prepared = [""] * len(text.splitlines())
+        for number, line in checklist.items():
+            prepared[number - 1] = line
+        extracted = extract_dimensions({"README.md": "\n".join(prepared).encode("utf-8")})
+        for item in extracted["evidence"]:
+            if item["dimension"] != "capabilities" or item["value"] in unsupported:
+                continue
+            mapped = _reference_evidence(item, source, text,
+                {number: [(0, len(text.splitlines()[number - 1]))] for number in checklist})
+            if mapped and item["value"] not in result["capabilities"]:
+                result["capabilities"].append(item["value"])
+                result["evidence"].append({**mapped, "claim_type": "review_checklist"})
     queue = deque([(source, text, 0, None)])
     visited = set()
     while queue:
@@ -235,5 +308,8 @@ def enrich_referenced_capabilities(files, dimensions):
     result["capabilities"] = sorted(set(result["capabilities"]) - unsupported)
     result["evidence"] = [item for item in result["evidence"]
         if item["dimension"] != "capabilities" or item["value"] in result["capabilities"]]
+    result["review_actions"] = [action for action in result.get("review_actions", [])
+        if REVIEW_ACTION_CAPABILITIES[action] in result["capabilities"]]
+    result["action_evidence"] = [item for item in result.get("action_evidence", []) if item["action"] in result["review_actions"]]
     result["reference_scan"]["read_files"] = len(visited)
     return result

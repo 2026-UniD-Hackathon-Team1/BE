@@ -3,7 +3,7 @@
 import re
 
 
-DIMENSIONS_VERSION = "document-dimensions-v5"
+DIMENSIONS_VERSION = "document-dimensions-v7"
 TEST_FIRST_PATTERN = (r"\btest[ -]driven[ -]development\b|\btest[ -]first\b|"
     r"\bred[ -]green[ -]refactor\b|\bwrite\s+(?:(?:a|the|one)\s+)?test\s+first\b|"
     r"테스트\s*주도\s*개발|테스트\s*우선\s*(?:개발|전략|접근)")
@@ -58,10 +58,10 @@ RULES = {
     "capabilities": {
         "input_validation": r"\binput[ -]validation\b|\bvalidat(?:e|es|ing)\s+(?:(?:the|all)\s+)?(?:inputs?|untrusted\s+(?:inputs?|data))\b|입력\s*검증",
         "exception_handling": r"\b(?:exception|error)[ -]handling\b|\bhandl(?:e|es|ing)\s+(?:(?:the|runtime|unexpected)\s+)?(?:errors?|exceptions?)\b|(?:예외|오류)\s*처리",
-        "regression_test": r"\bregression[ -]tests?\b|\b(?:writ(?:e|es|ing)|add(?:s|ing)?|creat(?:e|es|ing))\s+(?:(?:a|the|one)\s+)?(?:(?:new|failing|regression|automated|minimal)\s+){0,2}tests?\s+(?:(?:that\s+)?reproduc(?:e|es|ing)|to\s+reproduce)\s+(?:(?:a|the|this|reported|original|same)\s+){0,2}(?:bugs?|failures?)\b|회귀\s*테스트",
+        "regression_test": r"\bregression[ -](?:tests?|coverage)\b|\b(?:writ(?:e|es|ing)|add(?:s|ing)?|creat(?:e|es|ing))\s+(?:(?:a|the|one)\s+)?(?:(?:new|failing|regression|automated|minimal)\s+){0,2}tests?\s+(?:(?:that\s+)?reproduc(?:e|es|ing)|to\s+reproduce)\s+(?:(?:a|the|this|reported|original|same)\s+){0,2}(?:bugs?|failures?)\b|회귀\s*테스트",
         "test_coverage": r"\b(?:test|branch|line|statement)[ -]coverage\b|\bcoverage[ -](?:gaps?|reports?)\b|테스트\s*커버리지",
         "documentation": r"\bdocumentation\b|문서화",
-        "api_security": r"\bapi[ -]security\b|\bapi\s+(?:authentication|authorization)\b|\bauthentication(?:\s+and\s+|\s*[&/]\s*)authorization\b|\baccess[ -]control[ -]checks?\b|API\s*보안|인증\s*[·/]?\s*인가\s*검토",
+        "api_security": r"\bapi[ -]security\b|\bapi\s+(?:authentication|authorization)\b|\bauthentication(?:\s+and\s+|\s*[&/]\s*)authorization\b|\bauthorization(?:\s+and\s+|\s*[&/]\s*)authentication\b|\baccess[ -]control[ -]checks?\b|API\s*보안|인증\s*[·/]?\s*인가\s*검토",
         "accessibility": r"\baccessibility\b|\ba11y\b|\bwcag\b|접근성",
         "performance": r"\bperformance\b|성능\s*(?:개선|최적화|분석|측정|검토|테스트)",
         "browser_testing": r"\bbrowser[ -](?:tests?|testing|automation)\b|\bend[ -]to[ -]end[ -](?:tests?|testing)\b|\be2e[ -](?:tests?|testing)\b|브라우저\s*(?:테스트|자동화)|종단간\s*테스트",
@@ -96,6 +96,29 @@ SECRET_ASSIGNMENT = re.compile(
 UNSUPPORTED_SECTION = re.compile(
     r"\b(?:limitations?|non-goals?|out of scope)\b|제약|제한|지원\s*범위\s*밖", re.I,
 )
+REVIEW_ACTIONS = {
+    "accessibility_audit": re.compile(r"\b(?:conduct(?:s|ing)?|perform(?:s|ing)?|run(?:s|ning)?)\s+(?:(?:a|an|the|automated|manual|comprehensive|web|website)\s+)*(?:(?:wcag(?:\s+\d+(?:\.\d+)?)?\s+)?(?:accessibility|a11y)|wcag(?:\s+\d+(?:\.\d+)?)?)\s+audits?\b|\buse\s+(?:when|for)\s+auditing\s+(?:accessibility|(?:websites?|web\s+(?:sites?|apps?))\s+for\s+accessibility)\b", re.I),
+    "ui_accessibility_review": re.compile(r"\b(?:review|inspect)(?:s|ing)?\s+(?:(?:the|your)\s+)?(?:ui|front[ -]end|user[ -]interface)\s+code\b[^.!?]{0,80}\b(?:accessibility|wcag|a11y)\b", re.I),
+    "screen_reader_testing": re.compile(r"\btest(?:s|ing)?\s+(?:web\s+(?:applications?|apps?)|websites?)\s+with\s+screen\s+readers?\b|\bvalidat(?:e|es|ing)\s+screen\s+reader\s+compatibility\b", re.I),
+    "database_model_review": re.compile(r"\breview(?:s|ing)?\s+(?:(?:the|a|your)\s+)?(?:database\s+(?:models?|schemas?|changes?|migrations?)|data\s+models?|sql\s+(?:schemas?|migrations?)|(?:relational|document|key-value|graph|search)\b[^.;\n]{0,110}\b(?:data|models?))\b", re.I),
+}
+REVIEW_ACTION_CAPABILITIES = {action: "database_changes" if action == "database_model_review" else "accessibility"
+    for action in REVIEW_ACTIONS}
+
+
+def declared_review_actions(text):
+    """일반 구현 안내가 아닌 명시적 검토 및 검증 행동만 보존한다."""
+    return sorted(action for action, pattern in REVIEW_ACTIONS.items() if pattern.search(text) and _positive_clause(text))
+
+
+def accessibility_review_actions(text):
+    """일반 구현 안내와 구분되는 명시적 접근성 감사 및 검증 행동만 식별한다."""
+    return [action for action in declared_review_actions(text) if REVIEW_ACTION_CAPABILITIES[action] == "accessibility"]
+
+
+def database_review_actions(text):
+    """DB 모델과 스키마 검토를 API 스키마나 마이그레이션 실행 가이드와 구분한다."""
+    return [action for action in declared_review_actions(text) if REVIEW_ACTION_CAPABILITIES[action] == "database_changes"]
 
 
 def _primary_document(files: dict[str, bytes]) -> tuple[str, bytes] | None:
@@ -166,13 +189,18 @@ def _prose(line: str) -> str | None:
     stripped = re.sub(r"!\[[^\]]*\]\([^\s)]*\)", "", stripped)
     stripped = re.sub(r"\[([^\]]+)\]\([^\s)]*\)", r"\1", stripped)
     stripped = re.sub(r"https?://[^\s<>]+", "", stripped, flags=re.I)
-    return re.sub(r"(`+)(.*?)\1", lambda match: match.group(2)
+    cleaned = re.sub(r"(`+)(.*?)\1", lambda match: match.group(2)
                   if re.fullmatch(r"[\w.+#-]{1,40}", match.group(2)) else "", stripped)
+    if re.match(r"^(?:[-*+]\s+)?[\w-]+\s*:\s*", cleaned):
+        return None
+    return cleaned
 
 
 def _positive_clause(clause: str) -> bool:
     """부정과 미래 계획이 있는 절은 현재 지원 근거에서 제외한다."""
     clause = re.sub(r"\bnot\s+only\b", "", clause, flags=re.I)
+    # 실패할 수 없는 assertion은 제공 기능의 부정이 아니라 검토할 테스트 결함의 속성이다.
+    clause = re.sub(r"\bassertions?\s+(?:that\s+)?cannot\s+fail\b", "assertion effectiveness", clause, flags=re.I)
     return not (NEGATIVE.search(clause) or FUTURE.search(clause))
 
 
@@ -211,9 +239,17 @@ def declares_target(dimension, value, excerpt):
 
 def capability_claimed(capability, clause, match):
     """문서 참고 지시를 문서 작성 기능으로 바꾸지 않고 실제 생성 동작은 유지한다."""
+    before = clause[:match.start()]
+    after = clause[match.end():]
+    if re.search(r"\b(?:category|categories|severity|status|kind|enum|allowed\s+values|valid\s+categories)\b[\s`]*(?:[:=(])[^.!?]{0,240}$", before, re.I):
+        return False
+    if capability == "database_changes" and re.fullmatch(r"schema[ -](?:changes?|migrations?)", match.group(0), re.I):
+        if re.search(r"\b(?:api|json|openapi|graphql)\s*$", before, re.I):
+            return False
     if capability != "documentation":
         return True
-    before = clause[:match.start()]
+    if re.match(r"\s+(?:lives?|(?:is|are)\s+(?:available|located|found))\s+(?:in|at|under)\b", after, re.I):
+        return False
     references = list(re.finditer(r"\b(?:read(?:s|ing)?|see|refer(?:ring)?\s+(?:back\s+)?to|consult|check|follow|use)\b", before, re.I))
     if not references:
         return True
@@ -241,6 +277,8 @@ def extract_dimensions(files: dict[str, bytes]) -> dict:
     result = {dimension: [] for dimension in RULES}
     result["evidence"] = []
     result["target_evidence"] = []
+    result["review_actions"] = []
+    result["action_evidence"] = []
     target_values = set()
     primary = _primary_document(files)
     if primary is None:
@@ -285,6 +323,12 @@ def extract_dimensions(files: dict[str, bytes]) -> dict:
         for clause in re.split(r"(?<=[.!?])\s+|;\s*|\s+(?:but|whereas|however)\s+|하지만|반면", prose, flags=re.I):
             if not _positive_clause(clause):
                 continue
+            for action in declared_review_actions(clause):
+                if action not in result["review_actions"]:
+                    result["review_actions"].append(action)
+                    result["action_evidence"].append({"dimension": "capabilities", "value": REVIEW_ACTION_CAPABILITIES[action],
+                        "action": action, "path": path, "line": number,
+                        "excerpt": _target_excerpt(original_lines[number - 1], clause, REVIEW_ACTIONS[action])})
             for dimension, values in COMPILED_RULES.items():
                 for value, pattern in values.items():
                     match = next((item for item in pattern.finditer(clause) if dimension != "capabilities"
@@ -304,4 +348,8 @@ def extract_dimensions(files: dict[str, bytes]) -> dict:
                         target_values.add((dimension, value))
     for dimension in RULES:
         result[dimension].sort()
+    result["review_actions"] = [action for action in result["review_actions"]
+        if REVIEW_ACTION_CAPABILITIES[action] in result["capabilities"]]
+    result["action_evidence"] = [item for item in result["action_evidence"] if item["action"] in result["review_actions"]]
+    result["review_actions"].sort()
     return result

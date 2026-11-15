@@ -2,6 +2,7 @@
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
+import pytest
 
 from backend.personalization import build_context, rank_candidate
 from backend.catalog.dimensions import extract_dimensions
@@ -577,3 +578,65 @@ def test_declared_auxiliary_tool_does_not_receive_ai_runner_fit_points():
     result = rank(user=profile(goals=["input_validation"], context_json={"tools": ["pytest"]}), item=item)
     assert result["eligible"] and result["matches"]["tools"] == ["pytest"]
     assert result["breakdown"]["tool_fit"] == 0
+
+
+def test_accessibility_audit_complements_only_explicit_review_gap_without_relabeling_task():
+    """접근성 감사의 원문 행동을 선언한 검토 공백에만 연결하고 전체 코드 리뷰라고 부르지 않는다."""
+    item = candidate(tags=classify_bundle({"SKILL.md": b"Conduct WCAG 2.2 accessibility audits with manual verification."}))
+    user = profile(primary_language="typescript", goals=["accessibility"], context_json={"frameworks": ["react"]})
+    work = {"code_review": method("accessibility")}
+    result = rank(user=user, methods=work, item=item)
+    assert result["eligible"] and result["matches"]["relationship"] == "workflow_complement"
+    assert result["matches"]["candidate_task_types"] == [] and item[1].tags["task_types"] == []
+    assert result["matches"]["complementary_capability"] == "accessibility"
+    assert result["breakdown"]["task_relevance"] == 0
+    assert result["matches"]["source_actions"] == ["accessibility_audit"]
+    assert result["matches"]["source_action_evidence"][0]["path"] == "SKILL.md"
+    assert any("코드 리뷰 전체 지원은 확인하지 못함" in value for value in result["uncertainties"])
+
+
+def test_accessibility_implementation_guide_and_goal_only_do_not_enable_review_complement():
+    """접근성 명사나 구현 기능만으로 코드 리뷰 보완 관계를 일반화하지 않는다."""
+    user = profile(goals=["accessibility"])
+    implementation = candidate(tags=classify_bundle({"SKILL.md": b"Implement WCAG compliant accessible components."}))
+    assert not rank(user=user, methods={"code_review": method("accessibility")}, item=implementation)["eligible"]
+    audit = candidate(tags=classify_bundle({"SKILL.md": b"Conduct accessibility audits."}))
+    assert not rank(user=user, item=audit)["eligible"]
+    covered = method("accessibility")
+    covered.workflow_json[0]["status"] = "covered"
+    assert not rank(user=user, methods={"code_review": covered}, item=audit)["eligible"]
+
+
+def test_accessibility_complement_keeps_explicit_targets_and_safe_action_evidence_boundary():
+    """감사 단계도 다른 전용 환경을 우회하거나 위치가 잘못된 행동 근거를 사용하지 않는다."""
+    item = candidate(tags=classify_bundle({"SKILL.md": b"Conduct accessibility audits.\nSupports Django."}))
+    user = profile(goals=["accessibility"], context_json={"frameworks": ["react"]})
+    assert not rank(user=user, methods={"code_review": method("accessibility")}, item=item)["eligible"]
+    item = candidate(tags=classify_bundle({"SKILL.md": b"# Accessibility guide\nConduct accessibility audits."}))
+    for field in ("evidence", "action_evidence"):
+        item[1].tags["dimensions"][field] = [{**value, "path": "../outside.md"}
+            for value in item[1].tags["dimensions"][field]]
+    item[1].tags["evidence"] = []
+    assert not rank(user=user, methods={"code_review": method("accessibility")}, item=item)["eligible"]
+
+
+def test_explicit_database_model_review_complements_only_database_review_gap():
+    """DB 모델 검토 행동을 명시한 원문만 해당 변경 검토 공백의 단계 대안으로 연결한다."""
+    item = candidate(tags=classify_bundle({"SKILL.md": b"Designs or reviews relational, document, key-value, graph, or search data\nmodels. Use for schema changes and database migrations."}))
+    user = profile(goals=["database_changes"], context_json={"frameworks": ["flask"]})
+    result = rank(user=user, methods={"code_review": method("database_changes")}, item=item)
+    assert result["eligible"] and result["matches"]["relationship"] == "workflow_complement"
+    assert result["matches"]["source_actions"] == ["database_model_review"]
+    assert result["matches"]["complementary_capability"] == "database_changes"
+    assert result["breakdown"]["task_relevance"] == 0 and item[1].tags["task_types"] == []
+    assert result["matches"]["source_action_evidence"][0]["line"] == 1
+    assert not rank(user=user, item=item)["eligible"]
+
+
+@pytest.mark.parametrize("text", ["Implements SQL migrations safely.", "Reviews API schema changes.",
+    "Designs relational data models for database migrations."])
+def test_implementation_only_and_api_schema_sources_are_not_database_review_complements(text):
+    """DB 구현이나 API 스키마만 다루는 자료를 DB 검토 행동으로 확대하지 않는다."""
+    item = candidate(tags=classify_bundle({"SKILL.md": text.encode()}))
+    assert not rank(user=profile(goals=["database_changes"]),
+        methods={"code_review": method("database_changes")}, item=item)["eligible"]

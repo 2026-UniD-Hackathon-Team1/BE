@@ -5,10 +5,10 @@ from backend.catalog.dimensions import (TEST_FIRST_PATTERN, UNSUPPORTED_SECTION,
                                         capability_claimed, extract_dimensions)
 from backend.catalog.references import enrich_referenced_capabilities
 
-CLASSIFIER_VERSION = "explicit-context-v8"
+CLASSIFIER_VERSION = "explicit-context-v10"
 RULES = {
     "task_types": {
-        "code_review": r"\bcode[ -]review\b|\breview(?:s|ing)?\s+(?:(?:the|a|your)\s+)?(?:code|pull requests?|diff|changes|branch|pr)\b|코드\s*리뷰",
+        "code_review": r"\bcode[ -]review\b|\breview(?:s|ing)?\s+(?:(?:the|a|your)\s+)?(?:(?:github|gitlab)\s+)?(?:code|pull requests?|diff|changes|branch|pr)\b|코드\s*리뷰",
         "test_generation": r"\btest[ -]generation\b|\b(?:generat(?:e|es|ing)|writ(?:e|es|ing))\s+(?:(?:a|the|one)\s+)?(?:(?:unit|automated|minimal|failing|integration)\s+){0,2}tests?\b|테스트\s*생성|" + TEST_FIRST_PATTERN,
     },
     "capabilities": {
@@ -44,6 +44,34 @@ def _bounded_excerpt(line, clause, match):
     position = offset + match.start() if offset >= 0 else line.find(match.group(0))
     start = max(0, position - 80)
     return line[start:start + 240]
+
+
+def _ancillary_review_role(files):
+    """명시적 첫 설명이 리뷰 요청 준비나 받은 피드백 처리인 경우 독립 리뷰와 구분한다."""
+    raw = next((data for path, data in files.items() if path.lower() == "skill.md"), None)
+    if raw is None:
+        return None
+    try:
+        lines = raw.decode("utf-8-sig").splitlines()
+    except UnicodeError:
+        return None
+    description, active = [], False
+    for line in lines[1:128] if lines and lines[0].strip() == "---" else []:
+        if line.strip() == "---":
+            break
+        if line.startswith("description:"):
+            active = True
+            description.append(re.sub(r"^[>|+-]+$", "", line.split(":", 1)[1].strip()))
+        elif active and line.startswith((" ", "\t")):
+            description.append(line.strip())
+        else:
+            active = False
+    text = " ".join(description).strip(" \"'")
+    if re.match(r"(?:prepares?|drafts?|creates?|writes?)\b[^.!?]{0,80}\b(?:code[ -]review|review)\s+requests?\b", text, re.I):
+        return "review_request_preparation"
+    if re.match(r"(?:processes?|handles?|responds?\s+to)\b[^.!?]{0,60}\b(?:code[ -]review\s+)?feedback\b", text, re.I):
+        return "review_feedback_processing"
+    return None
 
 
 def classify_bundle(files: dict[str, bytes]) -> dict:
@@ -126,4 +154,11 @@ def classify_bundle(files: dict[str, bytes]) -> dict:
     tags["evidence"].extend({"category": "capabilities", "tag": item["value"],
         "path": item["path"], "line": item["line"], "excerpt": item["excerpt"]}
         for item in dimensions["evidence"] if item["dimension"] == "capabilities")
+    role = _ancillary_review_role(files)
+    if role:
+        tags["task_types"] = [task for task in tags["task_types"] if task != "code_review"]
+        tags["evidence"] = [item for item in tags["evidence"]
+            if item["category"] != "task_types" or item["tag"] != "code_review"]
+        tags["task_scope"] = {"code_review": role}
+        dimensions["review_actions"], dimensions["action_evidence"] = [], []
     return tags

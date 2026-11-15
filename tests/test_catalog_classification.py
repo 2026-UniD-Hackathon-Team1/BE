@@ -137,3 +137,45 @@ def test_explicit_test_strategy_is_design_without_claiming_test_code_generation(
     assert tags["task_types"] == []
     evidence = next(item for item in tags["dimensions"]["evidence"] if item["value"] == "test_design")
     assert evidence["line"] == 7 and evidence["excerpt"] == "# Test Strategy"
+
+
+def test_explicit_github_pull_request_review_is_an_actual_review_task():
+    """실제 독립 리뷰 설명의 GitHub 수식어 때문에 수행 작업이 누락되지 않는다."""
+    tags = classify_bundle({"SKILL.md": b"---\nname: pr-code-reviewer\ndescription: >-\n  Reviews a GitHub pull request for correctness and test gaps.\n---\n# PR Code Reviewer"})
+    assert tags["task_types"] == ["code_review"]
+    assert any(item["category"] == "task_types" and item["line"] == 4 for item in tags["evidence"])
+
+
+@pytest.mark.parametrize("description,role", [
+    ("Prepares a focused code review request for a branch.", "review_request_preparation"),
+    ("Processes code review feedback by validating findings.", "review_feedback_processing"),
+])
+def test_preparing_or_receiving_reviews_is_not_independent_code_review(description, role):
+    """리뷰 단어가 있어도 명시한 주 기능이 요청 준비나 피드백 처리이면 독립 리뷰로 추천하지 않는다."""
+    tags = classify_bundle({"SKILL.md": ("---\nname: helper\ndescription: " + description + "\n---\n# Code Review Helper").encode()})
+    assert tags["task_types"] == [] and tags["task_scope"]["code_review"] == role
+
+
+def test_reviewing_regression_coverage_is_not_generic_regression_hunting():
+    """명시한 테스트 회귀 커버리지 검토와 일반적인 회귀 결함 조사를 구분한다."""
+    positive = classify_bundle({"SKILL.md": b"Reviews a GitHub pull request.\n- **Tests:** missing regression coverage and assertions."})
+    assert positive["task_types"] == ["code_review"] and "regression_test" in positive["capabilities"]
+    assert "regression_test" not in classify_bundle({"SKILL.md": b"Hunt regressions in changed code."})["capabilities"]
+
+
+def test_reviewed_missing_regression_coverage_survives_unfalsifiable_assertion_finding():
+    """실제 검사 목록의 실패하지 않는 assertion 설명을 제공 기능 미지원으로 오인하지 않는다."""
+    text = "Reviews a GitHub pull request.\n- **Tests:** missing regression coverage, assertions that cannot fail for the defect."
+    tags = classify_bundle({"SKILL.md": text.encode()})
+    assert "regression_test" in tags["capabilities"]
+    evidence = next(item for item in tags["dimensions"]["evidence"] if item["value"] == "regression_test")
+    assert evidence["line"] == 2 and evidence["excerpt"] in text.splitlines()[1]
+    assert "regression_test" not in classify_bundle({"SKILL.md": b"No regression tests are provided."})["capabilities"]
+
+
+def test_output_category_enum_does_not_become_documentation_function():
+    """출력 분류 라벨에 등장한 문서화와 성능 단어를 수행 기능으로 등록하지 않는다."""
+    text = ("# Code Review\nOutput includes category (bug / performance / documentation / other).\n"
+        "- `category`: Issue category (bug, performance, documentation, other)")
+    tags = classify_bundle({"SKILL.md": text.encode()})
+    assert tags["task_types"] == ["code_review"] and tags["capabilities"] == []
